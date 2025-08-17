@@ -1,6 +1,7 @@
 
 
 import { GoogleGenAI, Type, GenerateContentResponse, Chat } from "@google/genai";
+import { useGoogleAuth } from "../components/GoogleAuthProvider";
 import { 
     ReportData, PeriodData, SectionAnalysis, ChatMessage,
     SaaSReportData, SaaSPeriodData,
@@ -13,11 +14,25 @@ import {
     createInitialPeriod
 } from "../types";
 
-if (!process.env.API_KEY) {
-  throw new Error("API_KEY environment variable not set. Please provide a valid Google AI API key.");
-}
+// Initialize AI instance - will be set when user authenticates
+let ai: GoogleGenAI | null = null;
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+export const initializeAI = (apiKey: string) => {
+  ai = new GoogleGenAI({ apiKey });
+};
+
+const getAI = (): GoogleGenAI => {
+  if (!ai) {
+    // Try to get API key from environment as fallback
+    const envApiKey = process.env.API_KEY || process.env.GEMINI_API_KEY;
+    if (envApiKey) {
+      ai = new GoogleGenAI({ apiKey: envApiKey });
+    } else {
+      throw new Error("Please sign in with Google to use Gemini AI, or set your API key in the environment.");
+    }
+  }
+  return ai;
+};
 
 type AnyReportData = ReportData | SaaSReportData | UaeProjectReportData | ProfessionalServicesReportData | APARReportData | InventoryReportData | HrReportData | CashFlowForecastReportData;
 
@@ -180,6 +195,7 @@ const formatGenericPlaceholderData = (data: any) => `Data summary for ${data.com
 
 // --- MAIN ANALYSIS FUNCTION ---
 export const generateSectionAnalysis = async (reportData: AnyReportData, sectionId: string): Promise<SectionAnalysis> => {
+    const aiInstance = getAI();
     let promptData: string;
     let sectionInstructions: string;
     let industries: string[] = [];
@@ -251,7 +267,7 @@ ${useSearch
         let parsedResult: any;
 
         if (useSearch) {
-            response = await ai.models.generateContent({
+            response = await aiInstance.models.generateContent({
                 model: "gemini-2.5-flash",
                 contents: prompt,
                 config: { tools: [{ googleSearch: {} }] },
@@ -279,7 +295,7 @@ ${useSearch
                     .map(web => ({ uri: web.uri, title: web.title || new URL(web.uri).hostname })) || []
             };
         } else {
-            response = await ai.models.generateContent({
+            response = await aiInstance.models.generateContent({
                 model: "gemini-2.5-flash",
                 contents: prompt,
                 config: {
@@ -370,6 +386,7 @@ const pdfExtractionSchema = {
 export const extractFinancialsFromPdf = async (
     pdfFilePart: { inlineData: { data: string; mimeType: string; }; }
 ): Promise<Partial<ReportData>> => {
+    const aiInstance = getAI();
     const prompt = `You are an expert financial data extraction tool. Analyze the provided PDF file which contains a company's financial statements. Your task is to meticulously extract data from the Income Statement, Balance Sheet, and Statement of Cash Flows for all periods present in the document.
 
 **Instructions:**
@@ -381,7 +398,7 @@ export const extractFinancialsFromPdf = async (
 6.  **Return valid JSON:** Your final output must be a single, valid JSON object that strictly adheres to the schema. Do not include any explanatory text or markdown formatting.`;
 
     try {
-        const response = await ai.models.generateContent({
+        const response = await aiInstance.models.generateContent({
             model: "gemini-2.5-flash",
             contents: { parts: [{ "text": prompt }, pdfFilePart] },
             config: {
@@ -426,6 +443,7 @@ export const extractFinancialsFromPdf = async (
 let chat: Chat | null = null;
 
 export const generateChatResponse = async (history: ChatMessage[], analysisContext: SectionAnalysis | undefined, reportData: AnyReportData): Promise<string> => {
+    const aiInstance = getAI();
     
     const dataSummary = JSON.stringify(reportData, null, 2);
 
@@ -451,7 +469,7 @@ export const generateChatResponse = async (history: ChatMessage[], analysisConte
     `;
     
     if (!chat) {
-        chat = ai.chats.create({
+        chat = aiInstance.chats.create({
             model: 'gemini-2.5-flash',
             config: {
                 systemInstruction,

@@ -1,5 +1,9 @@
 
 import React, { useState, useCallback } from 'react';
+import { GoogleAuthProvider, useGoogleAuth } from './components/GoogleAuthProvider';
+import { LoginModal } from './components/LoginModal';
+import { UserProfile } from './components/UserProfile';
+import { initializeAI } from './services/geminiService';
 import { 
     ChatMessage,
     ReportData, AINarrativeResponse, initialReportData,
@@ -40,6 +44,17 @@ import {
 } from './constants';
 import { SparklesIcon, MessageSquareIcon } from './components/icons';
 import { AIChat } from './components/AIChat';
+
+const AppContent: React.FC = () => {
+    const { isAuthenticated, signIn, apiKey } = useGoogleAuth();
+    const [showLoginModal, setShowLoginModal] = useState(false);
+
+    // Initialize AI when user is authenticated
+    React.useEffect(() => {
+        if (isAuthenticated && apiKey) {
+            initializeAI(apiKey);
+        }
+    }, [isAuthenticated, apiKey]);
 
 type AnalysisMode = 'financial' | 'construction' | 'saas' | 'services' | 'apar' | 'inventory' | 'hr' | 'cash_flow_forecast';
 type AppView = 'input' | 'report';
@@ -174,6 +189,11 @@ const App: React.FC = () => {
     const handleSendChatMessage = async (message: string) => {
         // This needs to be adapted for different modules
         if(!narrative) return;
+        
+        if (!isAuthenticated) {
+            setShowLoginModal(true);
+            return;
+        }
 
         setIsChatLoading(true);
         const newUserMessage: ChatMessage = { role: 'user', content: message };
@@ -193,6 +213,10 @@ const App: React.FC = () => {
     };
     
     const handleBackToSelector = () => {
+        if (!isAuthenticated) {
+            setShowLoginModal(true);
+            return;
+        }
         setAnalysisMode(null);
         setActiveView('input');
         setNarrative(null);
@@ -206,6 +230,22 @@ const App: React.FC = () => {
     };
 
     const renderContent = () => {
+        if (!isAuthenticated) {
+            return (
+                <div style={{ maxWidth: '600px', margin: '4rem auto', textAlign: 'center' }}>
+                    <div className="card">
+                        <h2>Welcome to Definitive</h2>
+                        <p style={{ color: 'var(--color-text-secondary)', marginBottom: '2rem' }}>
+                            Sign in with your Google account to access AI-powered financial analysis tools.
+                        </p>
+                        <button onClick={() => setShowLoginModal(true)} className="button button-primary">
+                            Get Started
+                        </button>
+                    </div>
+                </div>
+            );
+        }
+
         if (!analysisMode) {
             return <ModeSelector onSelect={(mode) => {
                 setAnalysisMode(mode);
@@ -269,12 +309,15 @@ const App: React.FC = () => {
                         <p style={{ margin: 0, color: 'var(--color-text-secondary)', fontSize: '0.9rem'}}>AI Financial Analysis Suite</p>
                     </div>
                 </div>
-                 {activeView.endsWith('report') && analysisMode === 'financial' && (
-                    <button onClick={() => setIsChatOpen(prev => !prev)} className="button button-secondary">
-                        <MessageSquareIcon />
-                        Chat with AI
-                    </button>
-                 )}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                    {activeView.endsWith('report') && analysisMode === 'financial' && (
+                        <button onClick={() => setIsChatOpen(prev => !prev)} className="button button-secondary">
+                            <MessageSquareIcon />
+                            Chat with AI
+                        </button>
+                    )}
+                    <UserProfile />
+                </div>
             </header>
 
             <main className="main-content">
@@ -290,8 +333,13 @@ const App: React.FC = () => {
                     isLoading={isChatLoading}
                 />
             )}
+            
+            <LoginModal
+                isOpen={showLoginModal}
+                onClose={() => setShowLoginModal(false)}
+                onSignIn={signIn}
+            />
         </div>
     );
 };
 
-export default App;
