@@ -1,6 +1,0 @@
-{
-  "name": "AI Financial Narrative Generator",
-  "description": "An AI-powered tool to generate insightful narratives and analysis from financial data. Input your financial summary and receive a structured report with headlines, key takeaways, and detailed commentary, complete with confidence scores and data provenance.",
-  "requestFramePermissions": [],
-  "prompt": ""
-}

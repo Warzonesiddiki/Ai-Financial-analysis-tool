@@ -1,33 +1,69 @@
 
-
-import React, { useState, useMemo, useCallback } from 'react';
-import ReactDOM from 'react-dom/client';
-import html2canvas from 'html2canvas';
-import { jsPDF } from 'jspdf';
-import { AINarrativeResponse, ReportData, Chart } from '../types';
+import React, { useMemo, useCallback, useEffect, useState } from 'react';
+import { AINarrativeResponse, ReportData, KeyMetric } from '../types';
+import { GenerationState } from '../App';
 import { SectionDisplay } from './SectionDisplay';
 import { AlertTriangleIcon, ArrowLeftIcon, CheckCircleIcon, XIcon } from './icons';
 import { ExportControls } from './ExportControls';
-import { REPORT_SECTIONS } from '../constants';
 import { Spinner } from './Spinner';
-import { SimpleBarChart } from './charts/SimpleBarChart';
-import { SimplePieChart } from './charts/SimplePieChart';
-import { SimpleLineChart } from './charts/SimpleLineChart';
+import { StatCard } from './StatCard';
 
-
-type ProgressState = { [key: string]: 'pending' | 'loading' | 'success' | 'error' };
 
 interface ReportDashboardProps {
     narrative: AINarrativeResponse | null;
     reportData: ReportData;
     isLoading: boolean;
-    progress: ProgressState;
+    generationState: GenerationState;
     onBackToInput: () => void;
+    activeSectionId: string;
+    setActiveSectionId: (id: string) => void;
 }
 
-const ReportDashboard: React.FC<ReportDashboardProps> = ({ narrative, reportData, isLoading, progress, onBackToInput }) => {
-    const [activeSectionId, setActiveSectionId] = useState<string>(REPORT_SECTIONS[0].id);
-    const [isPdfExporting, setIsPdfExporting] = useState<boolean>(false);
+const LiveGenerationStatus: React.FC<{ state: GenerationState }> = ({ state }) => {
+    const total = Object.keys(state).length;
+    const completed = Object.values(state).filter(s => s.status === 'success' && s.pass === 2).length;
+    const progress = total > 0 ? (completed / total) * 100 : 0;
+
+    return (
+        <div className="card" style={{ marginBottom: '2rem' }}>
+             <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem'}}>
+                <h3 style={{ margin: 0 }}>Live Generation Status</h3>
+                <span style={{fontWeight: 500, color: 'var(--color-text-secondary)'}}>{completed} / {total} Sections Complete</span>
+            </div>
+             <div style={{ backgroundColor: 'var(--color-border)', borderRadius: '99px', height: '8px', overflow: 'hidden' }}>
+                <div style={{ width: `${progress}%`, height: '100%', backgroundColor: 'var(--color-primary)', transition: 'width 0.5s ease' }}></div>
+            </div>
+        </div>
+    );
+};
+
+const ReportHighlights: React.FC<{ narrative: AINarrativeResponse | null }> = ({ narrative }) => {
+    const [highlights, setHighlights] = useState<KeyMetric[]>([]);
+
+    useEffect(() => {
+        if (narrative) {
+            const execSummary = narrative.sections.find(s => s.id === 'executive_summary');
+            if (execSummary?.analysis.quantitativeData?.keyMetrics) {
+                 setHighlights(execSummary.analysis.quantitativeData.keyMetrics.slice(0, 4));
+            }
+        }
+    }, [narrative]);
+
+    if (highlights.length === 0) return null;
+
+    return (
+        <div style={{marginBottom: '2rem'}}>
+            <h2 style={{fontSize: '1.5rem'}}>Report Highlights</h2>
+            <div className="grid grid-cols-4">
+                {highlights.map((metric, index) => (
+                    <StatCard key={index} metric={metric} />
+                ))}
+            </div>
+        </div>
+    );
+};
+
+const ReportDashboard: React.FC<ReportDashboardProps> = ({ narrative, reportData, isLoading, generationState, onBackToInput, activeSectionId, setActiveSectionId }) => {
 
     const activeSectionData = useMemo(() => {
         return narrative?.sections.find(s => s.id === activeSectionId);
@@ -38,80 +74,6 @@ const ReportDashboard: React.FC<ReportDashboardProps> = ({ narrative, reportData
         if (reportData.periods.length === 1) return `${reportData.periods[0].periodLabel} Financial Report`;
         return `${reportData.periods[0].periodLabel} - ${reportData.periods[reportData.periods.length - 1].periodLabel} Financial Report`;
     }, [reportData]);
-    
-    const fileName = `${reportData.companyName} ${getReportTitle()}`.replace(/\s+/g, '-');
-    
-    // A component to render the full report off-screen for PDF generation
-    const PrintableReport: React.FC<{ narrative: AINarrativeResponse, reportData: ReportData }> = ({ narrative, reportData }) => (
-        <div style={{ backgroundColor: 'var(--color-surface)', padding: '2rem' }}>
-            <div style={{ textAlign: 'center', padding: '2rem 0', pageBreakAfter: 'always' }}>
-                 {reportData.companyLogo && <img src={reportData.companyLogo} alt="logo" style={{ maxWidth: '150px', maxHeight: '150px', marginBottom: '1rem' }} />}
-                <h1 style={{fontSize: '2.5rem'}}>{reportData.companyName}</h1>
-                <p style={{ fontSize: '1.5rem', color: 'var(--color-text-secondary)' }}>{getReportTitle()}</p>
-                 <p style={{marginTop: '3rem', color: 'var(--color-text-secondary)'}}>Generated on {new Date().toLocaleDateString()}</p>
-            </div>
-            {narrative.sections.map(section => (
-                <SectionDisplay key={section.id} section={section} reportData={reportData} progressStatus="success" />
-            ))}
-        </div>
-    );
-
-    const handlePdfExport = useCallback(async () => {
-        if (isPdfExporting || !narrative) return;
-        setIsPdfExporting(true);
-    
-        const printContainer = document.createElement('div');
-        printContainer.id = 'print-container';
-        printContainer.style.position = 'absolute';
-        printContainer.style.left = '-9999px';
-        printContainer.style.width = '1200px'; 
-        printContainer.style.fontFamily = 'var(--font-sans)';
-        document.body.appendChild(printContainer);
-    
-        const root = ReactDOM.createRoot(printContainer);
-        root.render(<React.StrictMode><PrintableReport narrative={narrative} reportData={reportData} /></React.StrictMode>);
-        
-        // Wait for rendering and potential image loading
-        await new Promise(resolve => setTimeout(resolve, 1500)); 
-    
-        try {
-            const canvas = await html2canvas(printContainer, { scale: 2, logging: false, useCORS: true });
-            const imgData = canvas.toDataURL('image/png');
-            
-            const pdf = new jsPDF('p', 'mm', 'a4');
-            const pdfWidth = pdf.internal.pageSize.getWidth();
-            const pdfHeight = pdf.internal.pageSize.getHeight();
-            
-            const canvasWidth = canvas.width;
-            const canvasHeight = canvas.height;
-            const ratio = canvasWidth / canvasHeight;
-            
-            const imgHeightInPdf = pdfWidth / ratio;
-            let heightLeft = imgHeightInPdf;
-            let position = 0;
-    
-            pdf.addImage(imgData, 'PNG', 0, position, pdfWidth, imgHeightInPdf);
-            heightLeft -= pdfHeight;
-    
-            while (heightLeft > 0) {
-                position = position - pdfHeight;
-                pdf.addPage();
-                pdf.addImage(imgData, 'PNG', 0, position, pdfWidth, imgHeightInPdf);
-                heightLeft -= pdfHeight;
-            }
-    
-            pdf.save(`${fileName}.pdf`);
-    
-        } catch (error) {
-            console.error("PDF Export failed:", error);
-            alert("Sorry, there was an error creating the PDF. Please check the console for details.");
-        } finally {
-            root.unmount();
-            document.body.removeChild(printContainer);
-            setIsPdfExporting(false);
-        }
-    }, [isPdfExporting, narrative, reportData, fileName, getReportTitle, PrintableReport]);
-
 
     const renderSectionContent = () => {
         if (!activeSectionData) {
@@ -123,10 +85,11 @@ const ReportDashboard: React.FC<ReportDashboardProps> = ({ narrative, reportData
             );
         }
         
-        return <SectionDisplay section={activeSectionData} reportData={reportData} progressStatus={progress[activeSectionId]}/>;
+        const status = generationState[activeSectionId]?.status || 'pending';
+        return <SectionDisplay section={activeSectionData} reportData={reportData} progressStatus={status} />;
     };
 
-    if (isLoading && Object.values(progress).every(s => s === 'loading' || s === 'pending')) {
+    if (isLoading && Object.values(generationState).every(s => s.status === 'loading' && s.pass === 1)) {
         return (
             <div className="card" style={{textAlign: 'center', padding: '4rem', minHeight: '50vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center'}}>
                 <Spinner />
@@ -152,7 +115,8 @@ const ReportDashboard: React.FC<ReportDashboardProps> = ({ narrative, reportData
 
     return (
         <div id="report-container">
-            <header style={{marginBottom: '1.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '1rem'}}>
+            {isLoading && <LiveGenerationStatus state={generationState} />}
+            <header style={{marginBottom: '2rem', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '1rem', flexWrap: 'wrap'}}>
                 <div>
                      <button onClick={onBackToInput} className="button button-secondary" style={{marginBottom: '1rem'}}>
                          <ArrowLeftIcon />
@@ -163,42 +127,37 @@ const ReportDashboard: React.FC<ReportDashboardProps> = ({ narrative, reportData
                 </div>
                 <ExportControls 
                     narrative={narrative} 
-                    companyName={reportData.companyName} 
                     reportData={reportData}
-                    onPdfExport={handlePdfExport}
-                    isPdfExporting={isPdfExporting}
                 />
             </header>
+            
+            {!isLoading && <ReportHighlights narrative={narrative} />}
 
             <div className="dashboard">
                 <nav className="dashboard-nav">
                      <div className="card" style={{padding: '0.75rem'}}>
                         <h3 style={{padding: '0.5rem 0.5rem 0.75rem 0.5rem', borderBottom: '1px solid var(--color-border)', marginBottom: '0.5rem'}}>Report Sections</h3>
                         <div style={{display: 'flex', flexDirection: 'column', gap: '0.25rem'}}>
-                        {REPORT_SECTIONS.map(section => {
+                        {narrative.sections.map(section => {
                             const Icon = section.icon;
                             const isActive = activeSectionId === section.id;
-                            const status = progress[section.id];
+                            const status = generationState[section.id]?.status || 'pending';
                             
                             return (
                                 <button
                                     key={section.id}
                                     onClick={() => setActiveSectionId(section.id)}
-                                    className="button"
-                                    style={{
-                                      justifyContent: 'flex-start',
-                                      width: '100%',
-                                      backgroundColor: isActive ? 'var(--color-primary)' : 'transparent',
-                                      color: isActive ? 'white' : 'var(--color-text)',
-                                      border: 'none',
-                                      fontWeight: 500,
-                                    }}
+                                    className={`button dashboard-nav-item ${isActive ? 'active' : ''}`}
+                                    style={{ justifyContent: 'flex-start', width: '100%', backgroundColor: 'transparent', border: 'none' }}
                                 >
-                                    <Icon style={{width: '18px', height: '18px', color: isActive ? 'white' : 'var(--color-primary)'}}/>
-                                    <span style={{flexGrow: 1, textAlign: 'left'}}>{section.name}</span>
-                                    {status === 'loading' && <Spinner />}
-                                    {status === 'success' && <CheckCircleIcon style={{color: isActive? 'white' : 'var(--color-success)', width: '18px', height: '18px'}} />}
-                                    {status === 'error' && <XIcon style={{color: isActive? 'white' : 'var(--color-error)', width: '18px', height: '18px'}} />}
+                                    <div className="pill"></div>
+                                    <div style={{display: 'flex', alignItems: 'center', width: '100%'}}>
+                                        <Icon style={{width: '18px', height: '18px', color: 'var(--color-primary)', marginRight: '0.75rem', flexShrink: 0}}/>
+                                        <span style={{flexGrow: 1, textAlign: 'left'}}>{section.name}</span>
+                                        {status === 'loading' && <Spinner />}
+                                        {status === 'success' && <CheckCircleIcon style={{color: 'var(--color-success)', width: '18px', height: '18px'}} />}
+                                        {status === 'error' && <XIcon style={{color: 'var(--color-error)', width: '18px', height: '18px'}} />}
+                                    </div>
                                 </button>
                             );
                         })}

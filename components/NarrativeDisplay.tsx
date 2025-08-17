@@ -1,3 +1,4 @@
+
 import React from 'react';
 import { SectionAnalysis } from '../types';
 import { CheckCircleIcon, SparklesIcon, GlobeIcon } from './icons';
@@ -32,6 +33,19 @@ const ConfidenceBadge: React.FC<{ level: 'High' | 'Medium' | 'Low' }> = ({ level
 };
 
 export const NarrativeDisplay: React.FC<NarrativeDisplayProps> = ({ analysis, confidence, provenance }) => {
+  
+  const renderNarrative = (text: string) => {
+    if (!text) return null;
+    const paragraphs = text.split('\n').filter(p => p.trim());
+    return paragraphs.map((paragraph, index) => {
+        const match = paragraph.match(/^\*\*(.*?)\*\*$/);
+        if (match) {
+            return <h4 key={index} style={{ marginTop: '1rem', marginBottom: '0', color: 'var(--color-text)' }}>{match[1]}</h4>;
+        }
+        return <p key={index} style={{ margin: 0 }}>{paragraph}</p>;
+    });
+  };
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
       {confidence && (
@@ -50,7 +64,7 @@ export const NarrativeDisplay: React.FC<NarrativeDisplayProps> = ({ analysis, co
       <div style={{ backgroundColor: '#f9fafb', padding: '1.5rem', borderRadius: '8px', border: '1px solid var(--color-border)'}}>
         <h4 style={{ fontWeight: 600, marginBottom: '1rem', fontSize: '1rem', color: 'var(--color-text)' }}>Key Takeaways</h4>
         <ul className="takeaways-list">
-          {analysis.takeaways.map((item, index) => (
+          {analysis.takeaways && analysis.takeaways.map((item, index) => (
             <li key={index}>{item}</li>
           ))}
         </ul>
@@ -58,10 +72,8 @@ export const NarrativeDisplay: React.FC<NarrativeDisplayProps> = ({ analysis, co
 
       <div>
         <h4 style={{ fontWeight: 600, marginBottom: '1rem', fontSize: '1rem', color: 'var(--color-text)' }}>Detailed Narrative</h4>
-        <div style={{ color: 'var(--color-text-secondary)', lineHeight: 1.7, display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-            {analysis.narrative.split('\n').filter(p => p.trim()).map((paragraph, index) => 
-                <p key={index} style={{ margin: 0 }}>{paragraph}</p>
-            )}
+        <div style={{ color: 'var(--color-text-secondary)', lineHeight: 1.7, display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+             {renderNarrative(analysis.narrative)}
         </div>
       </div>
       

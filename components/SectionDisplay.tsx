@@ -1,12 +1,15 @@
+
 import React from 'react';
 import { ReportSection, ReportData, Chart } from '../types';
 import { StatCard } from './StatCard';
 import { SimpleBarChart } from './charts/SimpleBarChart';
 import { SimplePieChart } from './charts/SimplePieChart';
 import { SimpleLineChart } from './charts/SimpleLineChart';
+import { SimpleWaterfallChart } from './charts/SimpleWaterfallChart';
 import { NarrativeDisplay } from './NarrativeDisplay';
 import { AlertTriangleIcon } from './icons';
 import { Spinner } from './Spinner';
+import InteractiveScenario from './InteractiveScenario';
 
 interface SectionDisplayProps {
     section: ReportSection;
@@ -21,6 +24,7 @@ const renderChart = (chart: Chart, sectionId: string, index: number, currency: s
              {chart.type === 'bar' && <SimpleBarChart data={chart.data} currency={currency} />}
              {chart.type === 'pie' && <SimplePieChart data={chart.data} />}
              {chart.type === 'line' && <SimpleLineChart data={chart.data} currency={currency} />}
+             {chart.type === 'waterfall' && <SimpleWaterfallChart data={chart.data} currency={currency} />}
         </div>
     );
 };
@@ -49,10 +53,12 @@ export const SectionDisplay: React.FC<SectionDisplayProps> = ({ section, reportD
     }
     
     const { analysis } = section;
-    const hasCharts = analysis.charts && analysis.charts.length > 0;
-    const hasMetrics = analysis.keyMetrics && analysis.keyMetrics.length > 0;
-    const chartLayout = !hasCharts ? '' : analysis.charts.length === 1 ? 'grid-cols-1' : 'grid-cols-2';
-    const metricLayout = !hasMetrics ? '' : analysis.keyMetrics.length > 2 ? 'grid-cols-4' : 'grid-cols-2';
+    const { quantitativeData } = analysis;
+
+    const hasCharts = quantitativeData.charts && quantitativeData.charts.length > 0;
+    const hasMetrics = quantitativeData.keyMetrics && quantitativeData.keyMetrics.length > 0;
+    const chartLayout = !hasCharts ? '' : quantitativeData.charts.length === 1 ? 'grid-cols-1' : 'grid-cols-2';
+    const metricLayout = !hasMetrics ? '' : quantitativeData.keyMetrics.length > 2 ? 'grid-cols-4' : 'grid-cols-2';
 
 
     return (
@@ -63,15 +69,23 @@ export const SectionDisplay: React.FC<SectionDisplayProps> = ({ section, reportD
                 
                 {hasMetrics && (
                     <div className={`grid ${metricLayout}`} style={{gap: '1rem'}}>
-                        {analysis.keyMetrics.map((metric, index) => (
+                        {quantitativeData.keyMetrics.map((metric, index) => (
                             <StatCard key={index} metric={metric} />
                         ))}
                     </div>
                 )}
                 
+                {section.id === 'scenario_analysis' && (
+                    <InteractiveScenario
+                        initialAnalysis={analysis}
+                        latestPeriod={reportData.periods[reportData.periods.length - 1]}
+                        currency={reportData.currency}
+                    />
+                )}
+                
                 {hasCharts && (
                     <div className={`grid ${chartLayout}`} style={{gap: '1.5rem'}}>
-                        {analysis.charts!.map((chart, index) => renderChart(chart, section.id, index, reportData.currency))}
+                        {quantitativeData.charts!.map((chart, index) => renderChart(chart, section.id, index, reportData.currency))}
                     </div>
                 )}
                 

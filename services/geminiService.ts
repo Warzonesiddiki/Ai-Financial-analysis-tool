@@ -1,40 +1,16 @@
 
-
-import { GoogleGenAI, Type, GenerateContentResponse, Chat } from "@google/genai";
-import { useGoogleAuth } from "../components/GoogleAuthProvider";
+import { GoogleGenAI, Type, GenerateContentResponse, Chat, Content } from "@google/genai";
 import { 
     ReportData, PeriodData, SectionAnalysis, ChatMessage,
-    SaaSReportData, SaaSPeriodData,
-    UaeProjectReportData, ProjectData,
-    ProfessionalServicesReportData, ProfessionalServicesPeriodData,
-    APARReportData, APARPeriodData,
-    InventoryReportData, InventoryPeriodData,
-    HrReportData, HrPeriodData,
-    CashFlowForecastReportData, CashFlowForecastPeriodData,
-    createInitialPeriod
+    createInitialPeriod, QuantitativeData,
 } from "../types";
 
-// Initialize AI instance - will be set when user authenticates
-let ai: GoogleGenAI | null = null;
+if (!process.env.API_KEY) {
+  throw new Error("API_KEY environment variable not set. Please provide a valid Google AI API key.");
+}
 
-export const initializeAI = (apiKey: string) => {
-  ai = new GoogleGenAI({ apiKey });
-};
-
-const getAI = (): GoogleGenAI => {
-  if (!ai) {
-    // Try to get API key from environment as fallback
-    const envApiKey = process.env.API_KEY || process.env.GEMINI_API_KEY;
-    if (envApiKey) {
-      ai = new GoogleGenAI({ apiKey: envApiKey });
-    } else {
-      throw new Error("Please sign in with Google to use Gemini AI, or set your API key in the environment.");
-    }
-  }
-  return ai;
-};
-
-type AnyReportData = ReportData | SaaSReportData | UaeProjectReportData | ProfessionalServicesReportData | APARReportData | InventoryReportData | HrReportData | CashFlowForecastReportData;
+const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 // --- COMMON SCHEMAS & TYPES ---
 const keyMetricSchema = {
@@ -60,7 +36,8 @@ const chartSchema = {
                 properties: {
                     label: { type: Type.STRING },
                     value: { type: Type.NUMBER },
-                    series: { type: Type.STRING }
+                    series: { type: Type.STRING },
+                    type: { type: Type.STRING, enum: ['positive', 'negative', 'total']}
                 },
                 required: ['label', 'value']
             }
@@ -69,27 +46,12 @@ const chartSchema = {
     required: ['type', 'title', 'data']
 };
 
-const baseSectionAnalysisSchema = {
+const quantitativeDataSchema = {
     type: Type.OBJECT,
     properties: {
-        headline: { type: Type.STRING },
-        takeaways: { type: Type.ARRAY, items: { type: Type.STRING } },
-        narrative: { type: Type.STRING },
         keyMetrics: { type: Type.ARRAY, items: keyMetricSchema },
         charts: { type: Type.ARRAY, items: chartSchema },
-        sources: {
-             type: Type.ARRAY, 
-             items: { 
-                type: Type.OBJECT,
-                properties: {
-                    uri: { type: Type.STRING },
-                    title: { type: Type.STRING },
-                },
-                required: ['uri']
-            }
-        }
     },
-    required: ["headline", "takeaways", "narrative"]
 };
 
 
@@ -101,16 +63,28 @@ const safeParse = (value: string | number): number => {
 };
 const format = (val: string | number) => typeof val === 'number' ? val.toLocaleString() : (val ? safeParse(val).toLocaleString() : '0');
 
+// --- MULTI-MODEL PERSONA ---
+const getModelPersonaSystemPrompt = (persona: string): string => {
+    switch (persona) {
+        case 'gpt-4o':
+            return "You will emulate the persona of OpenAI's GPT-4o. Your analysis should be comprehensive, multi-faceted, and highly structured. Use clear headings and subheadings. The tone should be authoritative and professional, like a top-tier consulting report.";
+        case 'claude-3-sonnet':
+            return "You will emulate the persona of Anthropic's Claude 3 Sonnet. Your analysis should be balanced, nuanced, and very easy to understand. The tone should be conversational yet professional, focusing on clear explanations of complex topics and providing a well-rounded perspective.";
+        case 'gemini-2.5-flash':
+        default:
+            return "You are a world-class senior financial analyst. Your analysis is balanced, insightful, and data-driven, representing the native capabilities of Google's Gemini model.";
+    }
+};
 
-// --- MODULE-SPECIFIC LOGIC ---
+// --- FINANCIAL MODULE LOGIC ---
 
-// 1. Comprehensive Financial
 const formatFinancialDataForPrompt = (data: PeriodData, currency: string): string => {
     const totalRevenue = safeParse(data.incomeStatement.revenueSaleOfGoods) + safeParse(data.incomeStatement.revenueServices) + safeParse(data.incomeStatement.revenueRental) + safeParse(data.incomeStatement.otherIncome);
     const totalCogs = safeParse(data.incomeStatement.materialCost) + safeParse(data.incomeStatement.directLabor) + safeParse(data.incomeStatement.subcontractorCosts) + safeParse(data.incomeStatement.directEquipmentCost) + safeParse(data.incomeStatement.otherDirectCosts);
     const grossProfit = totalRevenue - totalCogs;
     const totalOpex = safeParse(data.incomeStatement.staffSalariesAdmin) + safeParse(data.incomeStatement.rentExpenseAdmin) + safeParse(data.incomeStatement.utilities) + safeParse(data.incomeStatement.marketingAdvertising) + safeParse(data.incomeStatement.legalProfessionalFees) + safeParse(data.incomeStatement.otherGAndA);
     const operatingProfit = grossProfit - totalOpex - safeParse(data.incomeStatement.depreciationAmortization);
+    const ebitda = operatingProfit + safeParse(data.incomeStatement.depreciationAmortization);
     const netIncome = operatingProfit - safeParse(data.incomeStatement.incomeTaxExpense);
     const totalCurrentAssets = safeParse(data.balanceSheet.cashAndBankBalances) + safeParse(data.balanceSheet.accountsReceivable) + safeParse(data.balanceSheet.inventory) + safeParse(data.balanceSheet.prepayments) + safeParse(data.balanceSheet.otherCurrentAssets);
     const totalNonCurrentAssets = safeParse(data.balanceSheet.propertyPlantEquipmentNet) + safeParse(data.balanceSheet.intangibleAssets) + safeParse(data.balanceSheet.investmentProperties) + safeParse(data.balanceSheet.longTermInvestments);
@@ -127,266 +101,253 @@ const formatFinancialDataForPrompt = (data: PeriodData, currency: string): strin
 
     return `
 ### Period: ${data.periodLabel}
-- **P&L Summary (${currency})**: Total Revenue: ${format(totalRevenue)}, Gross Profit: ${format(grossProfit)}, Operating Profit: ${format(operatingProfit)}, Net Income: ${format(netIncome)}
+- **P&L Summary (${currency})**: Total Revenue: ${format(totalRevenue)}, Gross Profit: ${format(grossProfit)}, Operating Profit: ${format(operatingProfit)}, EBITDA: ${format(ebitda)}, Net Income: ${format(netIncome)}
 - **Balance Sheet Summary (${currency})**: Total Assets: ${format(totalAssets)}, Total Liabilities: ${format(totalLiabilities)}, Total Equity: ${format(totalEquity)}, Working Capital: ${format(workingCapital)}, Total Debt: ${format(totalDebt)}
 - **Cash Flow Summary (${currency})**: CFO: ${format(cfo)}, CFI: ${format(cfi)}, CFF: ${format(cff)}
+- **Other Data**: Shares Outstanding: ${format(data.sharesOutstanding)}
 `.trim();
 };
 
-const getFinancialSectionInstructions = (sectionId: string): string => ({
-    'executive_summary': 'Using Google Search, provide a high-level overview of the story across the periods. Synthesize the provided financial data with recent market trends, economic indicators, and news relevant to the specified industries. Identify the company\'s trajectory (growth, stability, decline) and place it within the broader market context. Top KPIs: Revenue Growth, Net Profit Margin, Operating Cash Flow.',
-    'profit_or_loss': 'Analyze profitability trends. How is revenue growing/shrinking? Are margins improving? Explain drivers. KPIs: Total Revenue, Gross Profit, Net Income. Chart 1 (Line): "Revenue vs. Net Income Trend". Chart 2 (Pie): "Operating Expense Composition (Latest Period)".',
-    'financial_position': 'Analyze financial health. How is liquidity (Current Ratio) and leverage (Debt-to-Equity) evolving? KPIs: Total Assets, Total Liabilities, Total Equity. Chart 1 (Bar): "Current vs. Non-Current Assets Trend". Chart 2 (Pie): "Asset Composition (Latest Period)".',
-    'cash_flows': 'Analyze cash generation. Is operating cash flow improving? What are the main uses of cash? KPIs: Operating, Investing, and Financing Cash Flow. Chart: "Cash Flow from Activities Trend" (Line chart with series for Operating, Investing, Financing).',
-    'key_ratios': 'Calculate and analyze trends for key financial ratios like Current Ratio, Debt-to-Equity, Gross Profit Margin, Net Profit Margin, and Return on Equity.',
-    'budget_vs_actuals': 'If budget data exists, compare Actual vs Budget for revenue, COGS, and opex. Analyze variances. Otherwise, use placeholder strategy.',
-    'revenue_deep_dive': 'Analyze revenue growth rates and composition (goods vs. services). If segment data exists, analyze performance by segment.',
-    'cost_and_margin_analysis': 'Analyze cost structure (COGS vs OpEx as % of revenue) and margin trends (Gross, Operating, Net).',
-    'working_capital': 'Analyze Working Capital trend and its components (AR, AP, Inventory). Calculate and discuss the Cash Conversion Cycle.',
-    'debt_and_leverage': 'Analyze total debt, its composition (short vs long-term), and leverage ratios like Debt-to-Equity.',
-    'financial_risks': 'Based on the data, identify 3-5 key financial risks (e.g., liquidity, leverage, profitability).',
-    'esg_and_sustainability': 'If ESG data is provided, analyze trends. If not, use placeholder strategy.',
-    'competitor_benchmarking': 'Using Google Search, find typical financial ratios (like Gross Margin %, Net Margin %, and Debt-to-Equity) for public companies in the specified industries. Compare these benchmarks to this company\'s latest period data to provide a contextual performance analysis.',
-    'market_and_ma_outlook': 'Using Google Search, find recent market trends, growth forecasts, or significant M&A news for the specified industries. Synthesize these external factors and discuss potential opportunities or threats for the company.'
-}[sectionId] || `Generate a placeholder analysis for section ${sectionId}.`);
-
-
-// 2. SaaS
-const formatSaaSDataForPrompt = (period: SaaSPeriodData, currency: string): string => `
-### Period: ${period.periodLabel}
-- MRR (${currency}): New ${format(period.mrr.new)}, Expansion ${format(period.mrr.expansion)}, Contraction ${format(period.mrr.contraction)}, Churn ${format(period.mrr.churn)}
-- Customers: New ${format(period.customers.new)}, Total ${format(period.customers.total)}
-- CAC Spend (${currency}): Marketing ${format(period.cac.marketingSpend)}, Sales ${format(period.cac.salesSpend)}
-`;
-const getSaaSSectionInstructions = (sectionId: string): string => ({
-    'summary_dashboard': 'High-level overview of SaaS performance. Key trends in MRR growth and customer acquisition. KPIs: Net New MRR, Customer Growth Rate, Blended CAC.',
-    'mrr_deep_dive': 'Analyze the MRR movement using a waterfall chart. Explain the impact of new, expansion, contraction, and churned MRR. KPIs: Net MRR Growth Rate, Gross MRR Churn %.',
-    'customer_analysis': 'Analyze customer acquisition trends and costs. Calculate CAC and analyze its trend. KPIs: New Customers, Total Customers, Blended CAC.',
-    'unit_economics': 'Calculate and analyze LTV:CAC ratio. Explain its significance. LTV = (Avg Revenue Per Account / Customer Churn Rate) * Gross Margin %. KPIs: ARPA, Customer Churn Rate, LTV, LTV:CAC Ratio.',
-    'churn_analysis': 'Deep dive into churn. Calculate both Gross MRR Churn and Net MRR Churn. Explain the difference and what the trends mean. KPIs: Gross & Net MRR Churn %.',
-    'magic_number': 'Calculate and interpret the SaaS Magic Number. Is the company\'s growth efficient? Magic Number = (Current Quarter Revenue - Previous Quarter Revenue) * 4 / Previous Quarter CAC Spend. KPIs: SaaS Magic Number.',
-    'revenue_composition': 'Analyze the composition of Net New MRR (from New vs. Expansion). Chart: Stacked bar chart showing New MRR vs Expansion MRR for each period.'
-}[sectionId] || `Generate a placeholder analysis for section ${sectionId}.`);
-
-
-// 3. UAE Construction
-const formatUaeConstructionDataForPrompt = (data: UaeProjectReportData): string => `
-Company: ${data.companyName}, Currency: ${data.currency}
-Projects:
-${data.projects.map(p => `- ${p.name}: Contract Value ${format(p.totalContractValue)}, Completion ${p.completionPercentage}%, Last Year GP ${format(p.financials[0]?.grossProfit || 0)}`).join('\n')}
-Forecast Assumptions: Growth ${data.forecastAssumptions.revenueGrowthRate}%, Margin ${data.forecastAssumptions.expectedMargin}%
-`;
-const getUaeConstructionSectionInstructions = (sectionId: string): string => ({
-    'executive_summary': 'High-level overview of the project portfolio. What is the total contract value? What is the overall profitability? Mention key risks.',
-    'project_health_dashboard': 'Summarize the status of each project. Focus on completion vs. contract value and stated risks. This section should be tabular.',
-    'portfolio_financials': 'Analyze the combined financials of all projects. What are the trends in total revenue and gross profit for the portfolio?',
-    'five_year_forecast': 'If enabled, generate a 5-year forecast for portfolio revenue and gross profit based on the provided assumptions. Present as a table.',
-    'risk_assessment': 'Analyze the qualitative risks mentioned for each project and categorize them (e.g., timeline, budget, technical).',
-    'subcontractor_analysis': 'This section requires manual data input on subcontractors. Use placeholder strategy.',
-    'market_outlook': 'Use Google Search to provide a brief outlook on the UAE construction market. Mention key trends and projects.'
-}[sectionId] || `Generate a placeholder analysis for section ${sectionId}.`);
-
-// ... Implement formatters and instructions for other modules similarly ...
-// For brevity in this fix, we will use placeholder logic for the remaining modules but show the structure.
-
-const getGenericPlaceholderInstructions = (module: string, sectionId: string) => `This is a ${module} report. Generate a placeholder analysis for section ${sectionId}. Explain its purpose and the data needed.`;
-const formatGenericPlaceholderData = (data: any) => `Data summary for ${data.companyName}.`;
-
-
-// --- MAIN ANALYSIS FUNCTION ---
-export const generateSectionAnalysis = async (reportData: AnyReportData, sectionId: string): Promise<SectionAnalysis> => {
-    const aiInstance = getAI();
-    let promptData: string;
-    let sectionInstructions: string;
-    let industries: string[] = [];
-    let schema = baseSectionAnalysisSchema;
+const getFinancialSectionInstructions = (sectionId: string): { quant: string, narrative: string } => {
+    const baseNarrativeInstruction = "Structure the detailed narrative with markdown bolding for subheadings (e.g., **Trend Analysis**, **Key Drivers**, **Implications**). Ensure Key Takeaways are ALWAYS provided, even for placeholder sections. Your explanations should be educational, briefly defining key terms for a non-financial audience.";
     
-    // Type guard to select the right logic
-    if ('averageContractLengthMonths' in reportData) { // SaaS
-        promptData = reportData.periods.map(p => formatSaaSDataForPrompt(p, reportData.currency)).join('\n---\n');
-        sectionInstructions = getSaaSSectionInstructions(sectionId);
-        industries = reportData.industries;
-    } else if ('periods' in reportData && 'periodType' in reportData && 'industries' in reportData) { // Financial
-        promptData = (reportData as ReportData).periods.map(p => formatFinancialDataForPrompt(p, reportData.currency)).join('\n---\n');
-        sectionInstructions = getFinancialSectionInstructions(sectionId);
-        industries = reportData.industries;
-    } else if ('projects' in reportData) { // UAE Construction
-        promptData = formatUaeConstructionDataForPrompt(reportData);
-        sectionInstructions = getUaeConstructionSectionInstructions(sectionId);
-        if (sectionId === 'five_year_forecast') {
-            const newSchema = JSON.parse(JSON.stringify(baseSectionAnalysisSchema));
-            newSchema.properties.forecast = { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { year: {type: Type.NUMBER}, revenue: {type: Type.NUMBER}, grossProfit: {type: Type.NUMBER}, grossMargin: {type: Type.NUMBER}}}};
-            schema = newSchema;
+    const instructions: { [key: string]: { quant: string, narrative: string } } = {
+        'executive_summary': {
+            quant: `Calculate these KPIs for the latest period: Total Revenue, Net Income, Operating Cash Flow, and Return on Equity (ROE). Generate one Chart: "Key Financials Trend" (Line chart with series for "Total Revenue", "Net Income", and "Operating Cash Flow").`,
+            narrative: `Using the provided quantitative data, write a high-level overview of the company's financial story across all periods. What are the most important trends? What is the overall trajectory and financial health? ${baseNarrativeInstruction}`
+        },
+        'profit_or_loss': {
+            quant: `Calculate these KPIs: Total Revenue, Gross Profit Margin, Net Income. Generate Chart 1 (Waterfall): "Profit & Loss Breakdown (Latest Period)". Steps should be Total Revenue, COGS, Gross Profit, Operating Expenses, Operating Profit, Tax, Net Income.`,
+            narrative: `Using the quantitative data, analyze profitability trends. Explain revenue growth. Discuss drivers for changes in Gross Profit, Operating Profit, and Net Income. Are margins improving or declining, and why? ${baseNarrativeInstruction}`
+        },
+        'financial_position': {
+            quant: `Calculate these KPIs: Total Assets, Working Capital, Debt-to-Equity Ratio. Generate Chart 1 (Bar): "Asset Composition (Current vs. Non-Current)". Generate Chart 2 (Pie): "Liability & Equity Composition (Latest Period)".`,
+            narrative: `Using the quantitative data, analyze the company's financial health and capital structure. Discuss liquidity trends (Current Ratio). Explain leverage evolution (Debt-to-Equity ratio). What does the composition of assets and liabilities tell you? ${baseNarrativeInstruction}`
+        },
+        'cash_flows': {
+            quant: `Calculate these KPIs: Operating Cash Flow, Investing Cash Flow, and Financing Cash Flow. Generate one Chart: "Cash Flow from Activities Trend" (Line chart with series for Operating, Investing, Financing).`,
+            narrative: `Using the quantitative data, analyze cash generation and usage. Explain if the core business is generating positive cash flow (CFO). What are the main uses of cash? Is the overall cash balance growing? ${baseNarrativeInstruction}`
+        },
+        'key_ratios': {
+            quant: `Calculate these KPIs: Current Ratio (liquidity), Debt-to-Equity (leverage), Return on Equity (ROE), Return on Assets (ROA), and Earnings Per Share (EPS). Calculate DSO, DIO, DPO, and the Cash Conversion Cycle.`,
+            narrative: `Using the calculated ratios, analyze their trends. Explain what each ratio indicates about the company's liquidity, leverage, profitability, and operational efficiency over time. ${baseNarrativeInstruction}`
+        },
+        'common_size_analysis': {
+            quant: `Generate two Bar charts for the latest period: 1. "Common-Size Income Statement" (show major items like COGS, Gross Profit, OpEx, Net Income as % of Revenue). 2. "Common-Size Balance Sheet" (show major items like Cash, AR, Inventory, PPE, AP, Debt, Equity as % of Total Assets).`,
+            narrative: `Using the quantitative data, interpret the common-size statements. What are the key structural components of the P&L and Balance Sheet? How have these structures changed over time? What insights does this provide into the business model and financial strategy? ${baseNarrativeInstruction}`
+        },
+        'dupont_analysis': {
+            quant: `Calculate the three components of DuPont analysis for each period: Net Profit Margin (Profitability), Asset Turnover (Efficiency), and Equity Multiplier (Leverage). Also calculate the resulting Return on Equity (ROE). Generate a Line chart: "DuPont Component Trends" showing series for all three components.`,
+            narrative: `Using the quantitative data, deconstruct the Return on Equity (ROE). Explain how each of the three levers (Profitability, Efficiency, Leverage) has contributed to the changes in ROE over time. Which driver is having the biggest impact? ${baseNarrativeInstruction}`
+        },
+        'scenario_analysis': {
+            quant: `Based on the user's scenario assumptions and the latest period's data, project the next period's pro-forma financials. Calculate and return KPIs for Projected Revenue, Projected Net Income, and Projected EBITDA. If no assumptions provided, return empty arrays.`,
+            narrative: `If quantitative data exists, explain the projected outcomes based on the user's assumptions. Discuss the potential impact on profitability and the key drivers of the forecasted change. If no assumptions, use the placeholder strategy: explain the importance of scenario analysis for strategic planning and decision-making. ${baseNarrativeInstruction}`
+        },
+        'valuation_multiples': {
+            quant: `Calculate key valuation multiples for the latest period: Price/Earnings (P/E), Price/Sales (P/S), and EV/EBITDA. EV = Market Valuation + Total Debt - Cash. If valuation is not provided, return empty arrays.`,
+            narrative: `Using the calculated multiples, analyze the company's valuation. Use Google Search to find comparable trading multiples for the user-provided competitors. Compare the company's valuation to its peers. Is it overvalued, undervalued, or fairly valued, and why? ${baseNarrativeInstruction}`
+        },
+        'budget_vs_actuals': {
+            quant: `If budget data exists, create KPIs for Revenue Variance (%), COGS Variance (%), and OpEx Variance (%). Generate a Bar chart: "Budget vs. Actuals" with series for Budget and Actual Revenue, COGS, and OpEx for the latest period. If no budget data, return empty arrays for KPIs and charts.`,
+            narrative: `If quantitative data exists, perform a variance analysis. Analyze key variances and explain their impact. If no data, use the placeholder strategy: explain the importance of variance analysis for management control and decision-making. ${baseNarrativeInstruction}`
+        },
+        'revenue_deep_dive': {
+            quant: `Calculate KPIs for Period-over-Period Revenue Growth Rate. If segment data exists, create a Pie Chart: "Revenue by Segment (Latest Period)". If no segment data, create a Bar Chart: "Revenue Composition (Goods vs. Services)".`,
+            narrative: `Using the quantitative data, provide a detailed analysis of revenue. Analyze growth rates and composition. If segment data exists, analyze performance by segment, identifying key contributors. ${baseNarrativeInstruction}`
+        },
+        'cost_and_margin_analysis': {
+            quant: `Calculate these KPIs: Gross Margin %, Operating Margin %, Net Margin %. Create a line chart: "Margin Trends" with series for each of the three margin types.`,
+            narrative: `Using the quantitative data, analyze the company's cost structure. Discuss COGS and OpEx as a percentage of revenue. Analyze margin trends and explain what is driving expansion or contraction. ${baseNarrativeInstruction}`
+        },
+        'working_capital': {
+            quant: `Calculate these KPIs: Working Capital, Accounts Receivable Days, Accounts Payable Days, Inventory Days. Calculate the Cash Conversion Cycle.`,
+            narrative: `Using the quantitative data, analyze Working Capital trends and its components. Discuss the Cash Conversion Cycle. Explain if the company is managing its short-term operational assets and liabilities efficiently. ${baseNarrativeInstruction}`
+        },
+        'debt_and_leverage': {
+            quant: `Calculate these KPIs: Total Debt, Debt-to-Equity Ratio, Debt-to-EBITDA Ratio. Create a Pie chart: "Debt Composition (Short-term vs. Long-term)".`,
+            narrative: `Using the quantitative data, analyze the company's total debt, its composition, and key leverage ratios. Explain if the leverage level is appropriate for the company's industry and risk profile. ${baseNarrativeInstruction}`
+        },
+        'financial_risks': {
+            quant: ``, // No quantitative data needed for this section
+            narrative: `Based on all provided financial data, identify and explain the top 3-5 financial risks facing the company. These could include liquidity risk (e.g., from low cash), profitability risk (e.g., from declining margins), or leverage risk (e.g., from high debt). ${baseNarrativeInstruction}`
+        },
+        'esg_and_sustainability': {
+            quant: `If ESG data is provided, create a Line Chart: "ESG Metric Trends" with series for CO2 Emissions and Water Usage. Create KPIs for the latest values of all four ESG metrics. If no data, return empty arrays.`,
+            narrative: `If quantitative data exists, analyze the trends for each metric. Explain what these trends indicate about the company's sustainability and social performance. If no data, use the placeholder strategy explaining the growing importance of ESG metrics. ${baseNarrativeInstruction}`
+        },
+        'competitor_benchmarking': {
+            quant: `If user has provided competitors, generate bar charts comparing this company's latest Gross Margin %, Net Margin %, and Debt-to-Equity ratio against the industry averages you will find via search.`,
+            narrative: `Using Google Search, find typical financial ratios (Gross Margin %, Net Margin %, Debt-to-Equity) for the **specific competitors provided by the user**. Compare these benchmarks to this company's latest period data to provide a targeted, contextual performance analysis. Explain how the company stacks up against its peers. ${baseNarrativeInstruction}`
+        },
+        'report_methodology': {
+            quant: ``,
+            narrative: `Explain the methodologies used in this report for the key analytical frameworks. Cover Common-Size Analysis (defining base figures), DuPont Analysis (breaking down the formula), and Valuation Multiples (defining P/E, P/S, EV/EBITDA). This adds transparency and credibility. ${baseNarrativeInstruction}`
         }
-    } else if ('periods' in reportData && reportData.periods.length > 0 && 'serviceLines' in (reportData as ProfessionalServicesReportData).periods[0]) { // Professional Services
-        promptData = formatGenericPlaceholderData(reportData);
-        sectionInstructions = getGenericPlaceholderInstructions('Professional Services', sectionId);
-    } else if ('periods' in reportData && reportData.periods.length > 0 && 'invoices' in (reportData as APARReportData).periods[0]) { // AP/AR
-        promptData = formatGenericPlaceholderData(reportData);
-        sectionInstructions = getGenericPlaceholderInstructions('AP/AR', sectionId);
-    } else if ('periods' in reportData && reportData.periods.length > 0 && 'inventoryItems' in (reportData as InventoryReportData).periods[0]) { // Inventory
-        promptData = formatGenericPlaceholderData(reportData);
-        sectionInstructions = getGenericPlaceholderInstructions('Inventory', sectionId);
-    } else if ('periods' in reportData && reportData.periods.length > 0 && 'headcount' in (reportData as HrReportData).periods[0]) { // HR
-        promptData = formatGenericPlaceholderData(reportData);
-        sectionInstructions = getGenericPlaceholderInstructions('HR', sectionId);
-    } else if ('periods' in reportData && reportData.periods.length > 0 && 'startingBalance' in (reportData as CashFlowForecastReportData).periods[0]) { // Cash Flow Forecast
-        promptData = formatGenericPlaceholderData(reportData);
-        sectionInstructions = getGenericPlaceholderInstructions('Cash Flow Forecast', sectionId);
-    } else {
-        throw new Error("Unknown report data type");
-    }
+    };
+    return instructions[sectionId] || { quant: '', narrative: `Generate a placeholder analysis for section ${sectionId}. ${baseNarrativeInstruction}`};
+};
 
-    const industryContext = industries.length > 0 ? `The company operates in: **${industries.join(', ')}**.` : 'No specific industry was provided.';
-    const useSearch = ['executive_summary', 'competitor_benchmarking', 'market_and_ma_outlook', 'market_outlook'].includes(sectionId);
+// --- API CALL FUNCTIONS ---
+
+const performApiCall = async <T>(config: any, sectionId: string): Promise<T> => {
+    const maxRetries = 3;
+    let attempt = 0;
+    while (attempt < maxRetries) {
+        try {
+            const response = await ai.models.generateContent(config);
+            if (!response.text) {
+                throw new Error("The API returned an empty response.");
+            }
+            return JSON.parse(response.text) as T;
+        } catch (error) {
+            console.error(`Gemini API call failed for section ${sectionId} (Attempt ${attempt + 1}):`, error);
+            attempt++;
+            const isRateLimitError = error instanceof Error && (error.message.includes("429") || error.message.toLowerCase().includes("quota"));
+
+            if (isRateLimitError && attempt < maxRetries) {
+                const backoffTime = Math.pow(2, attempt) * 1000 + Math.random() * 1000;
+                await delay(backoffTime);
+            } else {
+                 if (error instanceof Error && error.message.includes("API_KEY")) throw new Error("Invalid API Key.");
+                 throw error; // Rethrow final error
+            }
+        }
+    }
+    throw new Error(`Failed to generate analysis for section ${sectionId} after ${maxRetries} attempts.`);
+};
+
+
+// --- PASS 1: QUANTITATIVE ANALYSIS ---
+export const generateQuantitativeData = async (
+    reportData: ReportData, 
+    sectionId: string
+): Promise<QuantitativeData> => {
+    const promptData = reportData.periods.map(p => formatFinancialDataForPrompt(p, reportData.currency)).join('\n---\n');
+    const { quant: sectionInstructions } = getFinancialSectionInstructions(sectionId);
+
+    if (!sectionInstructions) { 
+        return { keyMetrics: [], charts: [] };
+    }
+    
+    let additionalContext = '';
+    if (sectionId === 'scenario_analysis' && reportData.scenario) {
+        additionalContext += `**Scenario Assumptions:** Revenue Growth: ${reportData.scenario.revenueGrowth}%, COGS as % of Revenue: ${reportData.scenario.cogsPercentage}%, OpEx Growth: ${reportData.scenario.opexGrowth}%\n`;
+    }
+     if (sectionId === 'valuation_multiples' && reportData.marketValuation) {
+        additionalContext += `**Valuation Data:** Market Valuation: ${reportData.marketValuation}\n`;
+    }
 
     const prompt = `
-You are a world-class senior financial analyst. Your task is to analyze ONLY the section: **${sectionId}**.
-
-**Context:**
-- **Industries:** ${industryContext}
-- **Data Summary:**
----
-${promptData}
----
-**Instructions for '${sectionId}':**
-${sectionInstructions}
-
-**Output Format:**
-${useSearch
-? `Since you are using Google Search, provide a text-only response. Structure your response strictly with these headings on new lines:
-- **HEADLINE:** A single, impactful headline.
-- **TAKEAWAYS:** A bulleted list of 3-5 key takeaways, each on a new line starting with '* '.
-- **NARRATIVE:** A detailed narrative in multiple paragraphs.`
-: `The output MUST be a single, valid JSON object that strictly adheres to the provided schema. Do not include any markdown formatting like \`\`\`json in your response.`
-}
-`;
-
-    try {
-        let response: GenerateContentResponse;
-        let parsedResult: any;
-
-        if (useSearch) {
-            response = await aiInstance.models.generateContent({
-                model: "gemini-2.5-flash",
-                contents: prompt,
-                config: { tools: [{ googleSearch: {} }] },
-            });
-            const text = response.text;
-            if (!text) throw new Error("The API returned an empty response from search.");
-            
-            const headlineMatch = text.match(/^HEADLINE:(.*)$/m);
-            const takeawaysMatch = text.match(/^TAKEAWAYS:(.*?)NARRATIVE:/ms);
-            const narrativeMatch = text.match(/^NARRATIVE:(.*)$/ms);
-
-            const headline = headlineMatch ? headlineMatch[1].trim() : `Analysis for ${sectionId}`;
-            const takeaways = takeawaysMatch ? takeawaysMatch[1].trim().split('\n').filter(t => t.trim().startsWith('*')).map(t => t.replace(/^\*\s*/, '').trim()) : [];
-            const narrative = narrativeMatch ? narrativeMatch[1].trim() : text.replace(/^HEADLINE:.*$/m, '').replace(/^TAKEAWAYS:.*$/ms, '').trim();
-
-            parsedResult = {
-                headline,
-                takeaways,
-                narrative,
-                keyMetrics: [],
-                charts: [],
-                sources: response.candidates?.[0]?.groundingMetadata?.groundingChunks
-                    ?.map(chunk => chunk.web)
-                    .filter((web): web is { uri: string; title?: string } => !!web?.uri)
-                    .map(web => ({ uri: web.uri, title: web.title || new URL(web.uri).hostname })) || []
-            };
-        } else {
-            response = await aiInstance.models.generateContent({
-                model: "gemini-2.5-flash",
-                contents: prompt,
-                config: {
-                    temperature: 0.1,
-                    responseMimeType: "application/json",
-                    responseSchema: schema,
-                },
-            });
-
-            const text = response.text;
-            if (!text) throw new Error("The API returned an empty JSON response.");
-            parsedResult = JSON.parse(text);
-        }
+        **Task:** Perform quantitative analysis for the **'${sectionId}'** section.
+        **Context:**
+        - **Industries:** ${reportData.industries.join(', ')}
+        ${additionalContext}
+        - **Data Summary:**
+        ---
+        ${promptData}
+        ---
+        **Instructions for '${sectionId}':**
+        ${sectionInstructions}
         
-        return {
-            headline: parsedResult.headline || `Analysis for ${sectionId}`,
-            takeaways: parsedResult.takeaways || [],
-            narrative: parsedResult.narrative || "No narrative was generated.",
-            keyMetrics: parsedResult.keyMetrics || [],
-            charts: parsedResult.charts || [],
-            sources: parsedResult.sources || [],
-            ...parsedResult 
-        };
-        
-    } catch (error) {
-        console.error(`Gemini API call failed for section ${sectionId}:`, error);
-        if (error instanceof Error) {
-            if (error.message.includes("API_KEY")) throw new Error("Invalid API Key.");
-            if (error.message.includes("429") || error.message.toLowerCase().includes("quota")) throw new Error(`API rate limit hit for section '${sectionId}'.`);
-        }
-        throw new Error(`Failed to generate analysis for section ${sectionId}.`);
+        **Output Format:**
+        The output MUST be a single, valid JSON object that strictly adheres to the provided schema. Do not include any markdown formatting.
+    `;
+
+    const result = await performApiCall<QuantitativeData>({
+        model: "gemini-2.5-flash",
+        contents: prompt,
+        config: {
+            temperature: 0.0,
+            responseMimeType: "application/json",
+            responseSchema: quantitativeDataSchema,
+        },
+    }, sectionId);
+
+    return {
+        keyMetrics: result.keyMetrics || [],
+        charts: result.charts || [],
+    };
+};
+
+// --- PASS 2: NARRATIVE SYNTHESIS ---
+export const generateNarrative = async (
+    quantitativeData: QuantitativeData,
+    reportData: ReportData, 
+    sectionId: string,
+    persona: string
+): Promise<Omit<SectionAnalysis, 'quantitativeData'>> => {
+    
+    const systemInstruction = getModelPersonaSystemPrompt(persona);
+    const { narrative: sectionInstructions } = getFinancialSectionInstructions(sectionId);
+    const useSearch = sectionId === 'competitor_benchmarking' || sectionId === 'valuation_multiples';
+     const quantContext = `
+        **PRE-CALCULATED DATA (for your reference):**
+        ---
+        ${JSON.stringify(quantitativeData, null, 2)}
+        ---
+    `;
+    
+    let competitorContext = '';
+    if (useSearch && reportData.competitors.length > 0) {
+        competitorContext = `When using Google Search, focus your queries on these specific competitors: **${reportData.competitors.join(', ')}**.`;
     }
+
+    const prompt = `
+        **Task:** Write the narrative analysis for the **'${sectionId}'** section.
+        **Context:**
+        - **Industries:** ${reportData.industries.join(', ')}
+        ${competitorContext}
+        ${quantitativeData.keyMetrics || quantitativeData.charts ? quantContext : ''}
+
+        **Instructions for '${sectionId}':**
+        ${sectionInstructions}
+
+        **Output Format:**
+        Provide a text-only response. Structure your response strictly with these headings on new lines:
+        - **HEADLINE:** A single, impactful headline.
+        - **TAKEAWAYS:** A bulleted list of 3-5 key takeaways, each on a new line starting with '* '.
+        - **NARRATIVE:** A detailed narrative in multiple paragraphs.
+    `;
+
+    const response = await ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: prompt,
+        config: { 
+            tools: useSearch ? [{ googleSearch: {} }] : [],
+            systemInstruction
+        },
+    });
+
+    const text = response.text;
+    if (!text) throw new Error("The API returned an empty response for narrative generation.");
+    
+    const headlineMatch = text.match(/^HEADLINE:(.*)$/m);
+    const takeawaysMatch = text.match(/^TAKEAWAYS:(.*?)NARRATIVE:/ms);
+    const narrativeMatch = text.match(/^NARRATIVE:(.*)$/ms);
+
+    const headline = headlineMatch ? headlineMatch[1].trim() : `Analysis for ${sectionId}`;
+    const takeaways = takeawaysMatch ? takeawaysMatch[1].trim().split('\n').filter(t => t.trim().startsWith('*')).map(t => t.replace(/^\*\s*/, '').trim()) : [];
+    const narrative = narrativeMatch ? narrativeMatch[1].trim() : text.replace(/^HEADLINE:.*$/m, '').replace(/^TAKEAWAYS:.*$/ms, '').trim();
+
+    return {
+        headline,
+        takeaways,
+        narrative,
+        sources: response.candidates?.[0]?.groundingMetadata?.groundingChunks
+            ?.map(chunk => chunk.web)
+            .filter((web): web is { uri: string; title?: string } => !!web?.uri)
+            .map(web => ({ uri: web.uri, title: web.title || new URL(web.uri).hostname })) || []
+    };
 };
 
 
 // --- PDF EXTRACTION ---
-const incomeStatementExtractionSchema = {
-    type: Type.OBJECT,
-    properties: {
-        revenueSaleOfGoods: { type: Type.STRING }, revenueServices: { type: Type.STRING }, revenueRental: { type: Type.STRING }, otherIncome: { type: Type.STRING },
-        materialCost: { type: Type.STRING }, directLabor: { type: Type.STRING }, subcontractorCosts: { type: Type.STRING }, directEquipmentCost: { type: Type.STRING }, otherDirectCosts: { type: Type.STRING },
-        staffSalariesAdmin: { type: Type.STRING }, rentExpenseAdmin: { type: Type.STRING }, utilities: { type: Type.STRING }, marketingAdvertising: { type: Type.STRING }, legalProfessionalFees: { type: Type.STRING },
-        depreciationAmortization: { type: Type.STRING }, incomeTaxExpense: { type: Type.STRING }, otherGAndA: { type: Type.STRING },
-    }
-};
-const balanceSheetExtractionSchema = {
-    type: Type.OBJECT,
-    properties: {
-        cashAndBankBalances: { type: Type.STRING }, accountsReceivable: { type: Type.STRING }, inventory: { type: Type.STRING }, prepayments: { type: Type.STRING }, otherCurrentAssets: { type: Type.STRING },
-        propertyPlantEquipmentNet: { type: Type.STRING }, intangibleAssets: { type: Type.STRING }, investmentProperties: { type: Type.STRING }, longTermInvestments: { type: Type.STRING },
-        accountsPayable: { type: Type.STRING }, accruedExpenses: { type: Type.STRING }, shortTermLoans: { type: Type.STRING }, currentPortionOfLTDebt: { type: Type.STRING },
-        longTermLoans: { type: Type.STRING }, leaseLiabilities: { type: Type.STRING }, deferredTaxLiability: { type: Type.STRING },
-        shareCapital: { type: Type.STRING }, retainedEarnings: { type: Type.STRING }, otherReserves: { type: Type.STRING },
-    }
-};
-const cashFlowExtractionSchema = {
-    type: Type.OBJECT,
-    properties: {
-        netIncome: { type: Type.STRING }, depreciationAmortization: { type: Type.STRING }, changesInWorkingCapital: { type: Type.STRING },
-        capitalExpenditures: { type: Type.STRING }, saleOfAssets: { type: Type.STRING },
-        issuanceOfDebt: { type: Type.STRING }, repaymentOfDebt: { type: Type.STRING }, issuanceOfEquity: { type: Type.STRING }, dividendsPaid: { type: Type.STRING },
-    }
-};
-const periodDataExtractionSchema = {
-    type: Type.OBJECT,
-    properties: {
-        periodLabel: { type: Type.STRING, description: "The period label (e.g., '2023', 'Q4 2023', 'Dec 2023')" },
-        incomeStatement: incomeStatementExtractionSchema,
-        balanceSheet: balanceSheetExtractionSchema,
-        cashFlow: cashFlowExtractionSchema,
-    },
-    required: ['periodLabel', 'incomeStatement', 'balanceSheet', 'cashFlow']
-};
-const pdfExtractionSchema = {
-    type: Type.OBJECT,
-    properties: {
-        companyName: { type: Type.STRING, description: "The name of the company from the document." },
-        currency: { type: Type.STRING, description: "The reporting currency symbol or code (e.g., 'USD', '$', 'AED')." },
-        periods: {
-            type: Type.ARRAY,
-            description: "An array of financial data for each period found in the document. If there are multiple years, create an object for each.",
-            items: periodDataExtractionSchema
-        }
-    },
-    required: ['companyName', 'currency', 'periods']
-};
-
+// (Schema definitions are omitted for brevity as they are unchanged)
+const incomeStatementExtractionSchema = { type: Type.OBJECT, properties: { revenueSaleOfGoods: { type: Type.STRING }, revenueServices: { type: Type.STRING }, revenueRental: { type: Type.STRING }, otherIncome: { type: Type.STRING }, materialCost: { type: Type.STRING }, directLabor: { type: Type.STRING }, subcontractorCosts: { type: Type.STRING }, directEquipmentCost: { type: Type.STRING }, otherDirectCosts: { type: Type.STRING }, staffSalariesAdmin: { type: Type.STRING }, rentExpenseAdmin: { type: Type.STRING }, utilities: { type: Type.STRING }, marketingAdvertising: { type: Type.STRING }, legalProfessionalFees: { type: Type.STRING }, depreciationAmortization: { type: Type.STRING }, incomeTaxExpense: { type: Type.STRING }, otherGAndA: { type: Type.STRING }, } }; const balanceSheetExtractionSchema = { type: Type.OBJECT, properties: { cashAndBankBalances: { type: Type.STRING }, accountsReceivable: { type: Type.STRING }, inventory: { type: Type.STRING }, prepayments: { type: Type.STRING }, otherCurrentAssets: { type: Type.STRING }, propertyPlantEquipmentNet: { type: Type.STRING }, intangibleAssets: { type: Type.STRING }, investmentProperties: { type: Type.STRING }, longTermInvestments: { type: Type.STRING }, accountsPayable: { type: Type.STRING }, accruedExpenses: { type: Type.STRING }, shortTermLoans: { type: Type.STRING }, currentPortionOfLTDebt: { type: Type.STRING }, longTermLoans: { type: Type.STRING }, leaseLiabilities: { type: Type.STRING }, deferredTaxLiability: { type: Type.STRING }, shareCapital: { type: Type.STRING }, retainedEarnings: { type: Type.STRING }, otherReserves: { type: Type.STRING }, } }; const cashFlowExtractionSchema = { type: Type.OBJECT, properties: { netIncome: { type: Type.STRING }, depreciationAmortization: { type: Type.STRING }, changesInWorkingCapital: { type: Type.STRING }, capitalExpenditures: { type: Type.STRING }, saleOfAssets: { type: Type.STRING }, issuanceOfDebt: { type: Type.STRING }, repaymentOfDebt: { type: Type.STRING }, issuanceOfEquity: { type: Type.STRING }, dividendsPaid: { type: Type.STRING }, } }; const periodDataExtractionSchema = { type: Type.OBJECT, properties: { periodLabel: { type: Type.STRING, description: "The period label (e.g., '2023', 'Q4 2023', 'Dec 2023')" }, incomeStatement: incomeStatementExtractionSchema, balanceSheet: balanceSheetExtractionSchema, cashFlow: cashFlowExtractionSchema, }, required: ['periodLabel', 'incomeStatement', 'balanceSheet', 'cashFlow'] }; const pdfExtractionSchema = { type: Type.OBJECT, properties: { companyName: { type: Type.STRING, description: "The name of the company from the document." }, currency: { type: Type.STRING, description: "The reporting currency symbol or code (e.g., 'USD', '$', 'AED')." }, periods: { type: Type.ARRAY, description: "An array of financial data for each period found in the document. If there are multiple years, create an object for each.", items: periodDataExtractionSchema } }, required: ['companyName', 'currency', 'periods'] };
 export const extractFinancialsFromPdf = async (
     pdfFilePart: { inlineData: { data: string; mimeType: string; }; }
 ): Promise<Partial<ReportData>> => {
-    const aiInstance = getAI();
     const prompt = `You are an expert financial data extraction tool. Analyze the provided PDF file which contains a company's financial statements. Your task is to meticulously extract data from the Income Statement, Balance Sheet, and Statement of Cash Flows for all periods present in the document.
 
 **Instructions:**
@@ -397,53 +358,68 @@ export const extractFinancialsFromPdf = async (
 5.  **Detect metadata:** Identify and extract the company's name and the reporting currency (e.g., USD, AED, EUR).
 6.  **Return valid JSON:** Your final output must be a single, valid JSON object that strictly adheres to the schema. Do not include any explanatory text or markdown formatting.`;
 
-    try {
-        const response = await aiInstance.models.generateContent({
-            model: "gemini-2.5-flash",
-            contents: { parts: [{ "text": prompt }, pdfFilePart] },
-            config: {
-                responseMimeType: "application/json",
-                responseSchema: pdfExtractionSchema,
-                temperature: 0.0,
-            }
-        });
+    const maxRetries = 3;
+    let attempt = 0;
+    while (attempt < maxRetries) {
+        try {
+            const response = await ai.models.generateContent({
+                model: "gemini-2.5-flash",
+                contents: { parts: [{ "text": prompt }, pdfFilePart] },
+                config: {
+                    responseMimeType: "application/json",
+                    responseSchema: pdfExtractionSchema,
+                    temperature: 0.0,
+                }
+            });
 
-        const extractedData = JSON.parse(response.text);
+            const extractedData = JSON.parse(response.text);
 
-        // Post-processing to ensure all keys are present and values are strings
-        const processedPeriods = extractedData.periods.map((p: any) => {
-            const newPeriod = createInitialPeriod();
-            newPeriod.periodLabel = p.periodLabel || '';
-            
-            for (const statement of ['incomeStatement', 'balanceSheet', 'cashFlow'] as const) {
-                if (p[statement]) {
-                    for (const key in newPeriod[statement]) {
-                        if (Object.prototype.hasOwnProperty.call(p[statement], key)) {
-                            (newPeriod[statement] as any)[key] = String(p[statement][key] ?? '');
+            // Post-processing to ensure all keys are present and values are strings
+            const processedPeriods = extractedData.periods.map((p: any) => {
+                const newPeriod = createInitialPeriod();
+                newPeriod.periodLabel = p.periodLabel || '';
+                
+                for (const statement of ['incomeStatement', 'balanceSheet', 'cashFlow'] as const) {
+                    if (p[statement]) {
+                        for (const key in newPeriod[statement]) {
+                            if (Object.prototype.hasOwnProperty.call(p[statement], key)) {
+                                (newPeriod[statement] as any)[key] = String(p[statement][key] ?? '');
+                            }
                         }
                     }
                 }
-            }
-            return newPeriod;
-        });
+                return newPeriod;
+            });
 
-        return {
-            companyName: extractedData.companyName || '',
-            currency: extractedData.currency || 'USD',
-            periods: processedPeriods.sort((a,b) => b.periodLabel.localeCompare(a.periodLabel)), // Sort descending
-        };
-    } catch (error) {
-        console.error("PDF Extraction failed:", error);
-        throw new Error("Failed to extract data from the PDF. The document might be unreadable, password-protected, or in an unsupported format. Please try again with a different file.");
+            return {
+                companyName: extractedData.companyName || '',
+                currency: extractedData.currency || 'USD',
+                periods: processedPeriods.sort((a,b) => b.periodLabel.localeCompare(a.periodLabel)), // Sort descending
+            };
+        } catch (error) {
+            console.error(`PDF Extraction failed (Attempt ${attempt + 1}):`, error);
+            attempt++;
+            const isRateLimitError = error instanceof Error && (error.message.includes("429") || error.message.toLowerCase().includes("quota"));
+
+            if (isRateLimitError && attempt < maxRetries) {
+                const backoffTime = Math.pow(2, attempt) * 4000 + Math.random() * 1000; // Increased backoff
+                await delay(backoffTime);
+            } else {
+                 if (error instanceof Error && error.message.includes("API_KEY")) throw new Error("Invalid API Key.");
+                 const finalErrorMsg = isRateLimitError 
+                    ? "The service is busy processing other requests. Please wait a moment and try importing the PDF again."
+                    : "Failed to extract data from the PDF. The document might be unreadable, password-protected, or in an unsupported format.";
+                 throw new Error(finalErrorMsg);
+            }
+        }
     }
+    throw new Error(`Failed to extract data from PDF after ${maxRetries} attempts due to high service load.`);
 };
 
 
 // --- CHAT FUNCTIONALITY ---
 let chat: Chat | null = null;
-
-export const generateChatResponse = async (history: ChatMessage[], analysisContext: SectionAnalysis | undefined, reportData: AnyReportData): Promise<string> => {
-    const aiInstance = getAI();
+export const generateChatResponseStream = async (history: ChatMessage[], analysisContext: SectionAnalysis | undefined, reportData: ReportData) => {
     
     const dataSummary = JSON.stringify(reportData, null, 2);
 
@@ -467,24 +443,37 @@ export const generateChatResponse = async (history: ChatMessage[], analysisConte
     ${analysisContext ? JSON.stringify(analysisContext, null, 2) : "No specific section is being viewed."}
     ---
     `;
-    
-    if (!chat) {
-        chat = aiInstance.chats.create({
-            model: 'gemini-2.5-flash',
-            config: {
-                systemInstruction,
-            },
-        });
-    }
-    
-    const lastMessage = history[history.length - 1];
 
-    try {
-        const result = await chat.sendMessage({ message: lastMessage.content });
-        return result.text;
-    } catch (error) {
-        console.error("Chat API call failed:", error);
-        chat = null;
-        return "Sorry, I encountered an error. Let's start over. What would you like to know?";
+    // Map our ChatMessage format to the SDK's Content format
+    const sdkHistory: Content[] = history.slice(0, -1).map(msg => ({
+        role: msg.role,
+        parts: [{ text: msg.content }]
+    }));
+    
+    const maxRetries = 2;
+    let attempt = 0;
+    while(attempt < maxRetries) {
+        try {
+            chat = ai.chats.create({
+                model: 'gemini-2.5-flash',
+                config: { systemInstruction },
+                history: sdkHistory
+            });
+            
+            const lastMessage = history[history.length - 1];
+            const result = await chat.sendMessageStream({ message: lastMessage.content });
+            return result;
+
+        } catch (error) {
+            console.error(`Chat API call failed (Attempt ${attempt + 1}):`, error);
+            chat = null;
+            attempt++;
+             if (error instanceof Error && (error.message.includes("429") || error.message.toLowerCase().includes("quota")) && attempt < maxRetries) {
+                await delay(1500);
+            } else {
+                throw new Error("Sorry, I encountered an error. Please try again.");
+            }
+        }
     }
+    throw new Error("Sorry, the chat service is currently busy. Please try again in a moment.");
 };

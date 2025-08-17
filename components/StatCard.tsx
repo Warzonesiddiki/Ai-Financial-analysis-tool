@@ -23,10 +23,10 @@ export const StatCard: React.FC<StatCardProps> = ({ metric }) => {
 
 
   return (
-    <div className="card" style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between', padding: '1rem'}}>
+    <div className="stat-card">
       <div>
-        <p style={{ fontSize: '0.875rem', color: 'var(--color-text-secondary)', fontWeight: 500, margin: 0 }}>{metric.label}</p>
-        <p style={{ fontSize: '2.25rem', fontWeight: 700, margin: '0.25rem 0 0 0', color: 'var(--color-text)' }}>{metric.value}</p>
+        <p className="stat-card-label">{metric.label}</p>
+        <p className="stat-card-value">{metric.value}</p>
       </div>
       {hasChange && (
         <div className={`trend-badge ${trendBadgeClass}`} style={{ marginTop: '0.75rem', alignSelf: 'flex-start' }}>
