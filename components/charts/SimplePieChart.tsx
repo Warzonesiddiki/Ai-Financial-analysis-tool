@@ -1,14 +1,17 @@
-
-import React from 'react';
+import React, { useState } from 'react';
 import { ChartDataPoint } from '../../types';
 
 interface SimplePieChartProps {
   data: ChartDataPoint[];
+  currency: string;
 }
 
-const COLORS = ['#007bff', '#28a745', '#ffc107', '#dc3545', '#17a2b8', '#6610f2', '#6f42c1', '#20c997'];
+const COLORS = ['#4f46e5', '#16a34a', '#f59e0b', '#dc2626', '#0891b2', '#9333ea', '#64748b', '#d946ef'];
 
-export const SimplePieChart: React.FC<SimplePieChartProps> = ({ data }) => {
+
+export const SimplePieChart: React.FC<SimplePieChartProps> = ({ data, currency }) => {
+  const [tooltip, setTooltip] = useState<{ content: string, x: number, y: number } | null>(null);
+
   if (!data || data.length === 0) {
     return <div style={{ color: 'var(--color-text-secondary)', textAlign: 'center', padding: '2.5rem 0' }}>No chart data available.</div>;
   }
@@ -17,6 +20,21 @@ export const SimplePieChart: React.FC<SimplePieChartProps> = ({ data }) => {
   if (total === 0) {
       return <div style={{ color: 'var(--color-text-secondary)', textAlign: 'center', padding: '2.5rem 0' }}>All values are zero.</div>;
   }
+  
+  const formatValue = (value: number) => {
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: currency,
+    }).format(value);
+  };
+
+  const handleMouseMove = (e: React.MouseEvent, content: string) => {
+      setTooltip({ content, x: e.clientX, y: e.clientY });
+  };
+
+  const handleMouseLeave = () => {
+      setTooltip(null);
+  };
 
   let cumulativePercent = 0;
   const paths = data.map((item, index) => {
@@ -31,18 +49,30 @@ export const SimplePieChart: React.FC<SimplePieChartProps> = ({ data }) => {
     const y1 = 50 + 40 * Math.sin(startAngle);
     const x2 = 50 + 40 * Math.cos(endAngle);
     const y2 = 50 + 40 * Math.sin(endAngle);
+    
+    const tooltipContent = `${item.label}: ${formatValue(item.value)} (${(percent * 100).toFixed(1)}%)`;
 
     return (
       <path
         key={index}
         d={`M 50 50 L ${x1} ${y1} A 40 40 0 ${largeArcFlag} 1 ${x2} ${y2} Z`}
         fill={COLORS[index % COLORS.length]}
+        onMouseMove={(e) => handleMouseMove(e, tooltipContent)}
+        onMouseLeave={handleMouseLeave}
+        style={{ cursor: 'pointer', transition: 'opacity 0.2s' }}
+        onMouseOver={(e) => e.currentTarget.style.opacity = '0.85'}
+        onMouseOut={(e) => e.currentTarget.style.opacity = '1'}
       />
     );
   });
 
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: '1.5rem', color: 'var(--color-text)' }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: '1.5rem', color: 'var(--color-text)', position: 'relative' }}>
+        {tooltip && (
+            <div className="chart-tooltip" style={{ left: tooltip.x, top: tooltip.y, opacity: 1, transform: 'translate(-50%, -100%) translateY(-15px)' }}>
+                {tooltip.content}
+            </div>
+        )}
       <svg viewBox="0 0 100 100" style={{ width: '160px', height: '160px', flexShrink: 0 }}>
         {paths}
       </svg>

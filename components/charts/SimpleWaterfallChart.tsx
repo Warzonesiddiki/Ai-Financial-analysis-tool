@@ -1,5 +1,4 @@
-
-import React from 'react';
+import React, { useState } from 'react';
 import { ChartDataPoint } from '../../types';
 
 interface SimpleWaterfallChartProps {
@@ -8,6 +7,8 @@ interface SimpleWaterfallChartProps {
 }
 
 export const SimpleWaterfallChart: React.FC<SimpleWaterfallChartProps> = ({ data, currency }) => {
+    const [tooltip, setTooltip] = useState<{ content: string, x: number, y: number } | null>(null);
+
     if (!data || data.length === 0) {
         return <div style={{ color: 'var(--color-text-secondary)', textAlign: 'center', padding: '2.5rem 0' }}>No chart data available.</div>;
     }
@@ -20,6 +21,21 @@ export const SimpleWaterfallChart: React.FC<SimpleWaterfallChartProps> = ({ data
           compactDisplay: 'short'
         }).format(value);
     }
+    
+    const formatFullValue = (value: number) => {
+        return new Intl.NumberFormat('en-US', {
+          style: 'currency',
+          currency: currency,
+        }).format(value);
+    }
+
+    const handleMouseMove = (e: React.MouseEvent, content: string) => {
+        setTooltip({ content, x: e.clientX, y: e.clientY });
+    };
+
+    const handleMouseLeave = () => {
+        setTooltip(null);
+    };
 
     let runningTotal = 0;
     const chartData = data.map(item => {
@@ -30,7 +46,6 @@ export const SimpleWaterfallChart: React.FC<SimpleWaterfallChartProps> = ({ data
         return { ...item, start, end: runningTotal };
     });
     
-    // Determine the max value for scaling, considering the start and end points of bars
     const allValues = chartData.flatMap(d => [d.start, d.end, d.value]);
     const maxVal = Math.max(...allValues.map(Math.abs));
 
@@ -39,7 +54,12 @@ export const SimpleWaterfallChart: React.FC<SimpleWaterfallChartProps> = ({ data
     }
 
     return (
-        <div className="waterfall-chart">
+        <div className="waterfall-chart" style={{position: 'relative'}}>
+            {tooltip && (
+                <div className="chart-tooltip" style={{ left: tooltip.x, top: tooltip.y, opacity: 1, transform: 'translate(-50%, -100%) translateY(-15px)' }}>
+                    {tooltip.content}
+                </div>
+            )}
             {chartData.map((item, index) => {
                 let barLeft = 0;
                 let barWidth = 0;
@@ -50,19 +70,28 @@ export const SimpleWaterfallChart: React.FC<SimpleWaterfallChartProps> = ({ data
                     barWidth = (Math.abs(item.end) / maxVal) * 100;
                     barClass = 'waterfall-bar-total';
                 } else {
-                    if (item.value > 0) { // positive contribution
+                    if (item.value > 0) {
                         barLeft = (item.start / maxVal) * 100;
                         barWidth = (item.value / maxVal) * 100;
                         barClass = 'waterfall-bar-positive';
-                    } else { // negative contribution
+                    } else {
                         barLeft = (item.end / maxVal) * 100;
                         barWidth = (Math.abs(item.value) / maxVal) * 100;
                         barClass = 'waterfall-bar-negative';
                     }
                 }
 
+                const value = item.type === 'total' ? item.end : item.value;
+                const tooltipContent = `${item.label}: ${formatFullValue(value)}`;
+
                 return (
-                    <div className="waterfall-row" key={index}>
+                    <div className="waterfall-row" key={index}
+                        onMouseMove={(e) => handleMouseMove(e, tooltipContent)}
+                        onMouseLeave={handleMouseLeave}
+                        style={{ cursor: 'pointer', borderRadius: '4px', margin: '0 -1rem', padding: '0 1rem', transition: 'background-color 0.2s' }}
+                        onMouseOver={(e) => e.currentTarget.style.backgroundColor = 'var(--color-primary-light)'}
+                        onMouseOut={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+                    >
                         <div className="waterfall-label">{item.label}</div>
                         <div className="waterfall-bar-container">
                             <div
@@ -73,7 +102,7 @@ export const SimpleWaterfallChart: React.FC<SimpleWaterfallChartProps> = ({ data
                                 }}
                             ></div>
                         </div>
-                        <div className="waterfall-value">{formatValue(item.type === 'total' ? item.end : item.value)}</div>
+                        <div className="waterfall-value">{formatValue(value)}</div>
                     </div>
                 );
             })}

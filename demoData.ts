@@ -1,4 +1,3 @@
-
 import { 
     ReportData, PeriodData, createInitialPeriod
 } from './types';
@@ -112,6 +111,7 @@ export const demoReportData: ReportData = {
         revenueGrowth: '10',
         cogsPercentage: '45',
         opexGrowth: '5',
+        qualitativeAssumptions: 'Planning a major product launch in Q2. Entering the European market for the first time. Signed a significant new partnership that is expected to boost sales.',
     },
     marketValuation: '50000000',
     competitors: ['ServiceNow', 'Salesforce', 'Workday'],

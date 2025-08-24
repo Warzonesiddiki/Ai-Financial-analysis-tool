@@ -1,6 +1,4 @@
-
 import React from 'react';
-import { ShieldIcon } from './icons'; // Using a generic icon, can be changed
 
 export const InfoTooltip: React.FC<{ text: string }> = ({ text }) => {
     return (

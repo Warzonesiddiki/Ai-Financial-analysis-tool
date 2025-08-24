@@ -1,4 +1,3 @@
-
 import React, { useState, useRef, useEffect } from 'react';
 import { ChatMessage } from '../types';
 import { XIcon, SendIcon, SparklesIcon } from './icons';
@@ -68,10 +67,18 @@ export const AIChat: React.FC<AIChatProps> = ({ isOpen, onClose, messages, onSen
                 </button>
             </div>
             <div className="chat-messages">
+                {messages.length === 0 && (
+                    <div className="chat-message model">
+                         <div className="chat-avatar model">AI</div>
+                         <div className="chat-bubble model">
+                            I've reviewed this section of the report. Ask me anything to dive deeper.
+                         </div>
+                    </div>
+                )}
                 {messages.map((msg, index) => (
                     <MessageBubble key={index} message={msg} />
                 ))}
-                {isLoading && messages[messages.length-1]?.role !== 'model' && (
+                {isLoading && (
                     <div className="chat-message model">
                          <div className="chat-avatar model">AI</div>
                          <div className="chat-bubble model" style={{display:'flex', alignItems: 'center', gap: '8px'}}>

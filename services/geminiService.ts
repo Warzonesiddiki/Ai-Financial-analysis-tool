@@ -1,8 +1,11 @@
-
 import { GoogleGenAI, Type, GenerateContentResponse, Chat, Content } from "@google/genai";
 import { 
     ReportData, PeriodData, SectionAnalysis, ChatMessage,
-    createInitialPeriod, QuantitativeData,
+    createInitialPeriod, QuantitativeData, AINarrativeResponse, DashboardAnalysis,
+    Transaction, AIBookkeepingSummary, AIPnlSummary, AIBalanceSheetSummary,
+    BankTransaction, MatchSuggestion, InsightCard, Invoice, Bill, Budgets, InventoryItem,
+    CashFlowForecast, ManualAdjustment, RecurringTransaction, ChartOfAccount, AIBankFeedInsight,
+    KPIDeepDiveResponse, Chart
 } from "../types";
 
 if (!process.env.API_KEY) {
@@ -54,6 +57,17 @@ const quantitativeDataSchema = {
     },
 };
 
+const sectionAnalysisSchema = {
+    type: Type.OBJECT,
+    properties: {
+        headline: { type: Type.STRING, description: "A single, impactful headline for the section." },
+        takeaways: { type: Type.ARRAY, items: { type: Type.STRING }, description: "A list of 3-5 key takeaways." },
+        narrative: { type: Type.STRING, description: "A detailed narrative analysis. Use markdown for subheadings like **Subheading**." },
+        quantitativeData: quantitativeDataSchema,
+    },
+    required: ['headline', 'takeaways', 'narrative', 'quantitativeData']
+};
+
 
 // --- HELPERS ---
 const safeParse = (value: string | number): number => {
@@ -62,19 +76,6 @@ const safeParse = (value: string | number): number => {
     return isNaN(num) ? 0 : num;
 };
 const format = (val: string | number) => typeof val === 'number' ? val.toLocaleString() : (val ? safeParse(val).toLocaleString() : '0');
-
-// --- MULTI-MODEL PERSONA ---
-const getModelPersonaSystemPrompt = (persona: string): string => {
-    switch (persona) {
-        case 'gpt-4o':
-            return "You will emulate the persona of OpenAI's GPT-4o. Your analysis should be comprehensive, multi-faceted, and highly structured. Use clear headings and subheadings. The tone should be authoritative and professional, like a top-tier consulting report.";
-        case 'claude-3-sonnet':
-            return "You will emulate the persona of Anthropic's Claude 3 Sonnet. Your analysis should be balanced, nuanced, and very easy to understand. The tone should be conversational yet professional, focusing on clear explanations of complex topics and providing a well-rounded perspective.";
-        case 'gemini-2.5-flash':
-        default:
-            return "You are a world-class senior financial analyst. Your analysis is balanced, insightful, and data-driven, representing the native capabilities of Google's Gemini model.";
-    }
-};
 
 // --- FINANCIAL MODULE LOGIC ---
 
@@ -93,7 +94,7 @@ const formatFinancialDataForPrompt = (data: PeriodData, currency: string): strin
     const totalNonCurrentLiabilities = safeParse(data.balanceSheet.longTermLoans) + safeParse(data.balanceSheet.leaseLiabilities) + safeParse(data.balanceSheet.deferredTaxLiability);
     const totalLiabilities = totalCurrentLiabilities + totalNonCurrentLiabilities;
     const totalEquity = safeParse(data.balanceSheet.shareCapital) + safeParse(data.balanceSheet.retainedEarnings) + safeParse(data.balanceSheet.otherReserves);
-    const workingCapital = totalCurrentAssets - totalCurrentLiabilities;
+    const workingCapital = totalCurrentAssets - totalLiabilities;
     const totalDebt = safeParse(data.balanceSheet.shortTermLoans) + safeParse(data.balanceSheet.currentPortionOfLTDebt) + safeParse(data.balanceSheet.longTermLoans);
     const cfo = safeParse(data.cashFlow.netIncome) + safeParse(data.cashFlow.depreciationAmortization) + safeParse(data.cashFlow.changesInWorkingCapital);
     const cfi = safeParse(data.cashFlow.capitalExpenditures) + safeParse(data.cashFlow.saleOfAssets);
@@ -108,89 +109,104 @@ const formatFinancialDataForPrompt = (data: PeriodData, currency: string): strin
 `.trim();
 };
 
-const getFinancialSectionInstructions = (sectionId: string): { quant: string, narrative: string } => {
-    const baseNarrativeInstruction = "Structure the detailed narrative with markdown bolding for subheadings (e.g., **Trend Analysis**, **Key Drivers**, **Implications**). Ensure Key Takeaways are ALWAYS provided, even for placeholder sections. Your explanations should be educational, briefly defining key terms for a non-financial audience.";
+const getFinancialSectionInstructions = (sectionId: string): string => {
+    const baseNarrativeInstruction = "Structure the detailed narrative with markdown bolding for subheadings (e.g., **Trend Analysis**, **Key Drivers**, **Implications**). Ensure Key Takeaways are ALWAYS provided. Your explanations should be educational, briefly defining key terms for a non-financial audience.";
     
-    const instructions: { [key: string]: { quant: string, narrative: string } } = {
-        'executive_summary': {
-            quant: `Calculate these KPIs for the latest period: Total Revenue, Net Income, Operating Cash Flow, and Return on Equity (ROE). Generate one Chart: "Key Financials Trend" (Line chart with series for "Total Revenue", "Net Income", and "Operating Cash Flow").`,
-            narrative: `Using the provided quantitative data, write a high-level overview of the company's financial story across all periods. What are the most important trends? What is the overall trajectory and financial health? ${baseNarrativeInstruction}`
-        },
-        'profit_or_loss': {
-            quant: `Calculate these KPIs: Total Revenue, Gross Profit Margin, Net Income. Generate Chart 1 (Waterfall): "Profit & Loss Breakdown (Latest Period)". Steps should be Total Revenue, COGS, Gross Profit, Operating Expenses, Operating Profit, Tax, Net Income.`,
-            narrative: `Using the quantitative data, analyze profitability trends. Explain revenue growth. Discuss drivers for changes in Gross Profit, Operating Profit, and Net Income. Are margins improving or declining, and why? ${baseNarrativeInstruction}`
-        },
-        'financial_position': {
-            quant: `Calculate these KPIs: Total Assets, Working Capital, Debt-to-Equity Ratio. Generate Chart 1 (Bar): "Asset Composition (Current vs. Non-Current)". Generate Chart 2 (Pie): "Liability & Equity Composition (Latest Period)".`,
-            narrative: `Using the quantitative data, analyze the company's financial health and capital structure. Discuss liquidity trends (Current Ratio). Explain leverage evolution (Debt-to-Equity ratio). What does the composition of assets and liabilities tell you? ${baseNarrativeInstruction}`
-        },
-        'cash_flows': {
-            quant: `Calculate these KPIs: Operating Cash Flow, Investing Cash Flow, and Financing Cash Flow. Generate one Chart: "Cash Flow from Activities Trend" (Line chart with series for Operating, Investing, Financing).`,
-            narrative: `Using the quantitative data, analyze cash generation and usage. Explain if the core business is generating positive cash flow (CFO). What are the main uses of cash? Is the overall cash balance growing? ${baseNarrativeInstruction}`
-        },
-        'key_ratios': {
-            quant: `Calculate these KPIs: Current Ratio (liquidity), Debt-to-Equity (leverage), Return on Equity (ROE), Return on Assets (ROA), and Earnings Per Share (EPS). Calculate DSO, DIO, DPO, and the Cash Conversion Cycle.`,
-            narrative: `Using the calculated ratios, analyze their trends. Explain what each ratio indicates about the company's liquidity, leverage, profitability, and operational efficiency over time. ${baseNarrativeInstruction}`
-        },
-        'common_size_analysis': {
-            quant: `Generate two Bar charts for the latest period: 1. "Common-Size Income Statement" (show major items like COGS, Gross Profit, OpEx, Net Income as % of Revenue). 2. "Common-Size Balance Sheet" (show major items like Cash, AR, Inventory, PPE, AP, Debt, Equity as % of Total Assets).`,
-            narrative: `Using the quantitative data, interpret the common-size statements. What are the key structural components of the P&L and Balance Sheet? How have these structures changed over time? What insights does this provide into the business model and financial strategy? ${baseNarrativeInstruction}`
-        },
-        'dupont_analysis': {
-            quant: `Calculate the three components of DuPont analysis for each period: Net Profit Margin (Profitability), Asset Turnover (Efficiency), and Equity Multiplier (Leverage). Also calculate the resulting Return on Equity (ROE). Generate a Line chart: "DuPont Component Trends" showing series for all three components.`,
-            narrative: `Using the quantitative data, deconstruct the Return on Equity (ROE). Explain how each of the three levers (Profitability, Efficiency, Leverage) has contributed to the changes in ROE over time. Which driver is having the biggest impact? ${baseNarrativeInstruction}`
-        },
-        'scenario_analysis': {
-            quant: `Based on the user's scenario assumptions and the latest period's data, project the next period's pro-forma financials. Calculate and return KPIs for Projected Revenue, Projected Net Income, and Projected EBITDA. If no assumptions provided, return empty arrays.`,
-            narrative: `If quantitative data exists, explain the projected outcomes based on the user's assumptions. Discuss the potential impact on profitability and the key drivers of the forecasted change. If no assumptions, use the placeholder strategy: explain the importance of scenario analysis for strategic planning and decision-making. ${baseNarrativeInstruction}`
-        },
-        'valuation_multiples': {
-            quant: `Calculate key valuation multiples for the latest period: Price/Earnings (P/E), Price/Sales (P/S), and EV/EBITDA. EV = Market Valuation + Total Debt - Cash. If valuation is not provided, return empty arrays.`,
-            narrative: `Using the calculated multiples, analyze the company's valuation. Use Google Search to find comparable trading multiples for the user-provided competitors. Compare the company's valuation to its peers. Is it overvalued, undervalued, or fairly valued, and why? ${baseNarrativeInstruction}`
-        },
-        'budget_vs_actuals': {
-            quant: `If budget data exists, create KPIs for Revenue Variance (%), COGS Variance (%), and OpEx Variance (%). Generate a Bar chart: "Budget vs. Actuals" with series for Budget and Actual Revenue, COGS, and OpEx for the latest period. If no budget data, return empty arrays for KPIs and charts.`,
-            narrative: `If quantitative data exists, perform a variance analysis. Analyze key variances and explain their impact. If no data, use the placeholder strategy: explain the importance of variance analysis for management control and decision-making. ${baseNarrativeInstruction}`
-        },
-        'revenue_deep_dive': {
-            quant: `Calculate KPIs for Period-over-Period Revenue Growth Rate. If segment data exists, create a Pie Chart: "Revenue by Segment (Latest Period)". If no segment data, create a Bar Chart: "Revenue Composition (Goods vs. Services)".`,
-            narrative: `Using the quantitative data, provide a detailed analysis of revenue. Analyze growth rates and composition. If segment data exists, analyze performance by segment, identifying key contributors. ${baseNarrativeInstruction}`
-        },
-        'cost_and_margin_analysis': {
-            quant: `Calculate these KPIs: Gross Margin %, Operating Margin %, Net Margin %. Create a line chart: "Margin Trends" with series for each of the three margin types.`,
-            narrative: `Using the quantitative data, analyze the company's cost structure. Discuss COGS and OpEx as a percentage of revenue. Analyze margin trends and explain what is driving expansion or contraction. ${baseNarrativeInstruction}`
-        },
-        'working_capital': {
-            quant: `Calculate these KPIs: Working Capital, Accounts Receivable Days, Accounts Payable Days, Inventory Days. Calculate the Cash Conversion Cycle.`,
-            narrative: `Using the quantitative data, analyze Working Capital trends and its components. Discuss the Cash Conversion Cycle. Explain if the company is managing its short-term operational assets and liabilities efficiently. ${baseNarrativeInstruction}`
-        },
-        'debt_and_leverage': {
-            quant: `Calculate these KPIs: Total Debt, Debt-to-Equity Ratio, Debt-to-EBITDA Ratio. Create a Pie chart: "Debt Composition (Short-term vs. Long-term)".`,
-            narrative: `Using the quantitative data, analyze the company's total debt, its composition, and key leverage ratios. Explain if the leverage level is appropriate for the company's industry and risk profile. ${baseNarrativeInstruction}`
-        },
-        'financial_risks': {
-            quant: ``, // No quantitative data needed for this section
-            narrative: `Based on all provided financial data, identify and explain the top 3-5 financial risks facing the company. These could include liquidity risk (e.g., from low cash), profitability risk (e.g., from declining margins), or leverage risk (e.g., from high debt). ${baseNarrativeInstruction}`
-        },
-        'esg_and_sustainability': {
-            quant: `If ESG data is provided, create a Line Chart: "ESG Metric Trends" with series for CO2 Emissions and Water Usage. Create KPIs for the latest values of all four ESG metrics. If no data, return empty arrays.`,
-            narrative: `If quantitative data exists, analyze the trends for each metric. Explain what these trends indicate about the company's sustainability and social performance. If no data, use the placeholder strategy explaining the growing importance of ESG metrics. ${baseNarrativeInstruction}`
-        },
-        'competitor_benchmarking': {
-            quant: `If user has provided competitors, generate bar charts comparing this company's latest Gross Margin %, Net Margin %, and Debt-to-Equity ratio against the industry averages you will find via search.`,
-            narrative: `Using Google Search, find typical financial ratios (Gross Margin %, Net Margin %, Debt-to-Equity) for the **specific competitors provided by the user**. Compare these benchmarks to this company's latest period data to provide a targeted, contextual performance analysis. Explain how the company stacks up against its peers. ${baseNarrativeInstruction}`
-        },
-        'report_methodology': {
-            quant: ``,
-            narrative: `Explain the methodologies used in this report for the key analytical frameworks. Cover Common-Size Analysis (defining base figures), DuPont Analysis (breaking down the formula), and Valuation Multiples (defining P/E, P/S, EV/EBITDA). This adds transparency and credibility. ${baseNarrativeInstruction}`
-        }
+    const instructions: { [key: string]: string } = {
+        'executive_summary': `First, calculate these KPIs for the latest period: Total Revenue, Net Income, Operating Cash Flow, and Return on Equity (ROE). Then, generate one Chart: "Key Financials Trend" (Line chart with series for "Total Revenue", "Net Income", and "Operating Cash Flow"). Finally, write a high-level overview of the company's financial story across all periods. What are the most important trends? What is the overall trajectory and financial health? ${baseNarrativeInstruction}`,
+        'profit_or_loss': `First, calculate these KPIs: Total Revenue, Gross Profit Margin, Net Income. Then, generate Chart 1 (Waterfall): "Profit & Loss Breakdown (Latest Period)". Steps should be Total Revenue, COGS, Gross Profit, Operating Expenses, Operating Profit, Tax, Net Income. Finally, analyze profitability trends. Explain revenue growth, discuss drivers for changes in Gross Profit, Operating Profit, and Net Income, and comment on margin trends. ${baseNarrativeInstruction}`,
+        'financial_position': `First, calculate these KPIs: Total Assets, Working Capital, Debt-to-Equity Ratio. Then, generate two charts: Chart 1 (Bar): "Asset Composition (Current vs. Non-Current)" and Chart 2 (Pie): "Liability & Equity Composition (Latest Period)". Finally, analyze the company's financial health, capital structure, liquidity trends (Current Ratio), and leverage evolution (Debt-to-Equity ratio). ${baseNarrativeInstruction}`,
+        'cash_flows': `First, calculate these KPIs: Operating Cash Flow, Investing Cash Flow, and Financing Cash Flow. Then, generate one Chart: "Cash Flow from Activities Trend" (Line chart with series for Operating, Investing, Financing). Finally, analyze cash generation and usage. Is the core business generating positive cash flow (CFO)? What are the main uses of cash? Is the overall cash balance growing? ${baseNarrativeInstruction}`,
+        'key_ratios': `First, calculate these KPIs: Current Ratio (liquidity), Debt-to-Equity (leverage), Return on Equity (ROE), Return on Assets (ROA), Earnings Per Share (EPS), DSO, DIO, DPO, and the Cash Conversion Cycle. Then, analyze their trends. Explain what each ratio indicates about the company's liquidity, leverage, profitability, and operational efficiency over time. ${baseNarrativeInstruction}`,
+        'common_size_analysis': `First, generate two Bar charts for the latest period: 1. "Common-Size Income Statement" (show major items like COGS, Gross Profit, OpEx, Net Income as % of Revenue). 2. "Common-Size Balance Sheet" (show major items like Cash, AR, Inventory, PPE, AP, Debt, Equity as % of Total Assets). Then, interpret these statements. What are the key structural components and how have they changed over time? ${baseNarrativeInstruction}`,
+        'dupont_analysis': `First, calculate the three components of DuPont analysis for each period: Net Profit Margin (Profitability), Asset Turnover (Efficiency), and Equity Multiplier (Leverage), plus the resulting Return on Equity (ROE). Then, generate a Line chart: "DuPont Component Trends" showing series for all three components. Finally, deconstruct the ROE. Explain how each of the three levers has contributed to the changes in ROE over time. ${baseNarrativeInstruction}`,
+        'scenario_analysis': `If quantitative scenario assumptions are provided, project the next period's pro-forma financials and calculate KPIs for Projected Revenue, Projected Net Income, and Projected EBITDA. If not, return empty arrays. Then, if projections exist, explain the outcomes and key drivers. **Crucially, use any provided qualitative assumptions to enrich your narrative**, explaining *why* the quantitative projections are plausible (e.g., 'The 10% revenue growth is supported by the planned new product launch.'). If no scenario data is provided, explain the importance of scenario analysis for strategic planning. ${baseNarrativeInstruction}`,
+        'valuation_multiples': `If a market valuation is provided, calculate key valuation multiples for the latest period: Price/Earnings (P/E), Price/Sales (P/S), and EV/EBITDA (EV = Market Valuation + Total Debt - Cash). If not, return empty arrays. Then, use Google Search to find comparable trading multiples for the user-provided competitors. Compare the company's valuation to its peers. Is it overvalued, undervalued, or fairly valued, and why? ${baseNarrativeInstruction}`,
+        'budget_vs_actuals': `If budget data exists, create KPIs for Revenue Variance (%), COGS Variance (%), and OpEx Variance (%). Generate a Bar chart: "Budget vs. Actuals" with series for Budget and Actual Revenue, COGS, and OpEx for the latest period. If no budget data, return empty arrays. Then, if data exists, perform a variance analysis. If not, explain the importance of variance analysis for management control. ${baseNarrativeInstruction}`,
+        'revenue_deep_dive': `First, calculate KPIs for Period-over-Period Revenue Growth Rate. Then, if segment data exists, create a Pie Chart: "Revenue by Segment (Latest Period)"; otherwise, create a Bar Chart: "Revenue Composition (Goods vs. Services)". Finally, provide a detailed analysis of revenue, growth rates, and composition. ${baseNarrativeInstruction}`,
+        'cost_and_margin_analysis': `First, calculate these KPIs: Gross Margin %, Operating Margin %, Net Margin %. Then, create a line chart: "Margin Trends" with series for each of the three margin types. Finally, analyze the company's cost structure, discussing COGS and OpEx as a percentage of revenue and explaining margin trends. ${baseNarrativeInstruction}`,
+        'working_capital': `First, calculate these KPIs: Working Capital, Accounts Receivable Days, Accounts Payable Days, Inventory Days, and the Cash Conversion Cycle. Then, analyze Working Capital trends and its components, including the Cash Conversion Cycle, to assess short-term operational efficiency. ${baseNarrativeInstruction}`,
+        'debt_and_leverage': `First, calculate these KPIs: Total Debt, Debt-to-Equity Ratio, Debt-to-EBITDA Ratio. Then, create a Pie chart: "Debt Composition (Short-term vs. Long-term)". Finally, analyze the company's total debt, its composition, and key leverage ratios, explaining if the leverage level is appropriate. ${baseNarrativeInstruction}`,
+        'financial_risks': `Based on all provided financial data, identify and explain the top 3-5 financial risks facing the company (e.g., liquidity, profitability, leverage). No quantitative data generation is needed for this section. ${baseNarrativeInstruction}`,
+        'esg_and_sustainability': `If ESG data is provided, create a Line Chart: "ESG Metric Trends" (series for CO2 Emissions, Water Usage) and KPIs for the latest values of all four ESG metrics. If not, return empty arrays. Then, if data exists, analyze the trends. If not, explain the growing importance of ESG metrics. ${baseNarrativeInstruction}`,
+        'competitor_benchmarking': `First, generate bar charts comparing this company's latest Gross Margin %, Net Margin %, and Debt-to-Equity ratio against the industry averages you find via search. Then, use Google Search to find typical financial ratios for the **specific competitors provided by the user**. Compare these benchmarks to this company's latest period data to provide a targeted, contextual performance analysis. ${baseNarrativeInstruction}`,
+        'report_methodology': `Explain the methodologies used in this report for Common-Size Analysis, DuPont Analysis, and Valuation Multiples. No quantitative data generation is needed. This adds transparency and credibility. ${baseNarrativeInstruction}`
     };
-    return instructions[sectionId] || { quant: '', narrative: `Generate a placeholder analysis for section ${sectionId}. ${baseNarrativeInstruction}`};
+    return instructions[sectionId] || `Generate a placeholder analysis for section ${sectionId}. ${baseNarrativeInstruction}`;
 };
 
 // --- API CALL FUNCTIONS ---
 
-const performApiCall = async <T>(config: any, sectionId: string): Promise<T> => {
+export const generateBatchedSectionAnalysis = async (
+    reportData: ReportData, 
+    sectionIds: string[]
+): Promise<Record<string, SectionAnalysis>> => {
+    const systemInstruction = "You are a world-class senior financial analyst. Your analysis is balanced, insightful, and data-driven. You MUST generate all requested sections in a single response, adhering strictly to the provided JSON schema for the entire output.";
+    
+    const sectionsInstructions = sectionIds.map(id => `
+---
+**Instructions for '${id}':**
+${getFinancialSectionInstructions(id)}
+    `).join('\n');
+    
+    const useSearch = sectionIds.some(id => ['competitor_benchmarking', 'valuation_multiples'].includes(id));
+    
+    const promptData = reportData.periods.map(p => formatFinancialDataForPrompt(p, reportData.currency)).join('\n---\n');
+    let additionalContext = '';
+    if (sectionIds.includes('scenario_analysis') && reportData.scenario) {
+        additionalContext += `**Scenario Assumptions (Quantitative):** Revenue Growth: ${reportData.scenario.revenueGrowth}%, COGS as % of Revenue: ${reportData.scenario.cogsPercentage}%, OpEx Growth: ${reportData.scenario.opexGrowth}%\n`;
+        if (reportData.scenario.qualitativeAssumptions) {
+            additionalContext += `**Scenario Assumptions (Qualitative):** ${reportData.scenario.qualitativeAssumptions}\n`;
+        }
+    }
+    if (sectionIds.includes('valuation_multiples') && reportData.marketValuation) {
+        additionalContext += `**Valuation Data:** Market Valuation: ${reportData.marketValuation}\n`;
+    }
+    if (useSearch && reportData.competitors.length > 0) {
+        additionalContext += `When using Google Search, focus queries on these specific competitors: **${reportData.competitors.join(', ')}**.\n`;
+    }
+
+    const prompt = `
+        **Task:** Perform a complete analysis (quantitative and narrative) for the following sections: **${sectionIds.join(', ')}**.
+        **Context:**
+        - **Industries:** ${reportData.industries.join(', ')}
+        ${additionalContext}
+        - **Data Summary:**
+        ---
+        ${promptData}
+        ---
+        ${sectionsInstructions}
+        
+        **Output Format:**
+        Your entire output MUST be a single, valid JSON object that strictly adheres to the provided schema. The top-level keys must be the section IDs (${sectionIds.join(', ')}). Do not include any markdown formatting or explanatory text outside of the JSON structure.
+    `;
+
+    const properties: { [key: string]: any } = {};
+    sectionIds.forEach(id => {
+        properties[id] = sectionAnalysisSchema;
+    });
+    const batchedSchema = {
+        type: Type.OBJECT,
+        properties,
+        required: sectionIds,
+    };
+
+    const config: any = {
+        model: "gemini-2.5-flash",
+        contents: prompt,
+        config: {
+            systemInstruction,
+            temperature: 0.1,
+        }
+    };
+    
+    if (useSearch) {
+        config.config.tools = [{ googleSearch: {} }];
+    } else {
+        config.config.responseMimeType = "application/json";
+        config.config.responseSchema = batchedSchema;
+    }
+
     const maxRetries = 3;
     let attempt = 0;
     while (attempt < maxRetries) {
@@ -199,9 +215,24 @@ const performApiCall = async <T>(config: any, sectionId: string): Promise<T> => 
             if (!response.text) {
                 throw new Error("The API returned an empty response.");
             }
-            return JSON.parse(response.text) as T;
+            const analysisBatch: Record<string, SectionAnalysis> = JSON.parse(response.text);
+            
+            if (useSearch) {
+                const sources = response.candidates?.[0]?.groundingMetadata?.groundingChunks
+                    ?.map(chunk => chunk.web)
+                    .filter((web): web is { uri: string; title?: string } => !!web?.uri)
+                    .map(web => ({ uri: web.uri, title: web.title || new URL(web.uri).hostname })) || [];
+                
+                sectionIds.forEach(id => {
+                    if (['competitor_benchmarking', 'valuation_multiples'].includes(id) && analysisBatch[id]) {
+                        analysisBatch[id].sources = sources;
+                    }
+                });
+            }
+            
+            return analysisBatch;
         } catch (error) {
-            console.error(`Gemini API call failed for section ${sectionId} (Attempt ${attempt + 1}):`, error);
+            console.error(`Gemini API call failed for batch (${sectionIds.join(', ')}) (Attempt ${attempt + 1}):`, error);
             attempt++;
             const isRateLimitError = error instanceof Error && (error.message.includes("429") || error.message.toLowerCase().includes("quota"));
 
@@ -214,131 +245,280 @@ const performApiCall = async <T>(config: any, sectionId: string): Promise<T> => 
             }
         }
     }
-    throw new Error(`Failed to generate analysis for section ${sectionId} after ${maxRetries} attempts.`);
+    throw new Error(`Failed to generate analysis for batch (${sectionIds.join(', ')}) after ${maxRetries} attempts.`);
 };
 
 
-// --- PASS 1: QUANTITATIVE ANALYSIS ---
-export const generateQuantitativeData = async (
-    reportData: ReportData, 
-    sectionId: string
-): Promise<QuantitativeData> => {
-    const promptData = reportData.periods.map(p => formatFinancialDataForPrompt(p, reportData.currency)).join('\n---\n');
-    const { quant: sectionInstructions } = getFinancialSectionInstructions(sectionId);
+export const generateDashboardSummary = async (fullReport: AINarrativeResponse): Promise<DashboardAnalysis> => {
+    const summarySchema = {
+        type: Type.OBJECT,
+        properties: {
+            cfoBriefing: { type: Type.STRING, description: "A 2-3 paragraph strategic summary from the perspective of a CFO. Start with the most important finding. Synthesize the key themes from the entire report." },
+            strategicRecommendations: { type: Type.ARRAY, items: { type: Type.STRING }, description: "A list of 3-5 specific, actionable strategic recommendations based on the analysis." }
+        },
+        required: ['cfoBriefing', 'strategicRecommendations']
+    };
 
-    if (!sectionInstructions) { 
-        return { keyMetrics: [], charts: [] };
-    }
-    
-    let additionalContext = '';
-    if (sectionId === 'scenario_analysis' && reportData.scenario) {
-        additionalContext += `**Scenario Assumptions:** Revenue Growth: ${reportData.scenario.revenueGrowth}%, COGS as % of Revenue: ${reportData.scenario.cogsPercentage}%, OpEx Growth: ${reportData.scenario.opexGrowth}%\n`;
-    }
-     if (sectionId === 'valuation_multiples' && reportData.marketValuation) {
-        additionalContext += `**Valuation Data:** Market Valuation: ${reportData.marketValuation}\n`;
-    }
+    const analysisContext = fullReport.sections.map(s => `
+        **Section: ${s.name}**
+        - Headline: ${s.analysis.headline}
+        - Takeaways: ${s.analysis.takeaways.join('; ')}
+    `).join('');
 
     const prompt = `
-        **Task:** Perform quantitative analysis for the **'${sectionId}'** section.
-        **Context:**
-        - **Industries:** ${reportData.industries.join(', ')}
-        ${additionalContext}
-        - **Data Summary:**
-        ---
-        ${promptData}
-        ---
-        **Instructions for '${sectionId}':**
-        ${sectionInstructions}
+        **Task:** You are the Chief Financial Officer (CFO). You have just reviewed a comprehensive financial analysis report. Your task is to synthesize all the findings into a high-level strategic briefing for the board of directors.
         
-        **Output Format:**
-        The output MUST be a single, valid JSON object that strictly adheres to the provided schema. Do not include any markdown formatting.
+        **Context:**
+        Here are the headlines and key takeaways from every section of the report you just reviewed:
+        ---
+        ${analysisContext}
+        ---
+
+        **Instructions:**
+        1.  **Synthesize, Don't Repeat:** Do not just list the takeaways. Find the connecting threads and tell a cohesive story about the company's performance, strengths, and weaknesses.
+        2.  **Adopt the CFO Persona:** Write in a direct, authoritative, and strategic tone. Focus on the "so what?" of the data.
+        3.  **Create Actionable Recommendations:** Your recommendations should be forward-looking and practical. What should the company do next based on this analysis?
+
+        Provide your output in a valid JSON format adhering to the schema.
     `;
 
-    const result = await performApiCall<QuantitativeData>({
-        model: "gemini-2.5-flash",
-        contents: prompt,
-        config: {
-            temperature: 0.0,
-            responseMimeType: "application/json",
-            responseSchema: quantitativeDataSchema,
-        },
-    }, sectionId);
-
-    return {
-        keyMetrics: result.keyMetrics || [],
-        charts: result.charts || [],
-    };
+    try {
+        const response = await ai.models.generateContent({
+            model: "gemini-2.5-flash",
+            contents: prompt,
+            config: {
+                systemInstruction: "You are a world-class Chief Financial Officer AI, skilled at synthesizing complex financial data into strategic insights.",
+                responseMimeType: "application/json",
+                responseSchema: summarySchema,
+                temperature: 0.3
+            }
+        });
+        if (!response.text) {
+            throw new Error("The API returned an empty response for the dashboard summary.");
+        }
+        return JSON.parse(response.text);
+    } catch (error) {
+        console.error('Failed to generate dashboard summary:', error);
+        throw new Error('Could not generate the final CFO Briefing.');
+    }
 };
 
-// --- PASS 2: NARRATIVE SYNTHESIS ---
-export const generateNarrative = async (
-    quantitativeData: QuantitativeData,
-    reportData: ReportData, 
-    sectionId: string,
-    persona: string
-): Promise<Omit<SectionAnalysis, 'quantitativeData'>> => {
+// --- BOOKKEEPING MODULE ---
+const transactionExtractionSchema = {
+    type: Type.OBJECT,
+    properties: {
+        date: { type: Type.STRING, description: "The date of the transaction in YYYY-MM-DD format." },
+        description: { type: Type.STRING, description: "A concise description of the transaction or merchant name." },
+        amount: { type: Type.NUMBER, description: "The total amount of the transaction. Should be a positive number." },
+        suggestedAccountId: { type: Type.STRING, description: "The most likely account ID from the provided list." },
+    },
+    required: ['date', 'description', 'amount', 'suggestedAccountId']
+};
+
+export const extractTransactionFromImage = async (
+    imageFilePart: { inlineData: { data: string; mimeType: string; }; }
+): Promise<{ date: string; description: string; amount: number; accountId: string; }> => {
+    const accountListForPrompt = `
+      'inc_sales': 'Sales Revenue', 'inc_consulting': 'Consulting Income', 'inc_interest': 'Interest Income', 'inc_other': 'Other Income',
+      'exp_advertising': 'Advertising & Marketing', 'exp_bank_fees': 'Bank Fees', 'exp_cogs': 'Cost of Goods Sold',
+      'exp_contractors': 'Contractors & Freelancers', 'exp_insurance': 'Insurance', 'exp_legal': 'Legal & Professional Services',
+      'exp_meals': 'Meals & Entertainment', 'exp_office': 'Office Supplies & Expenses', 'exp_rent': 'Rent & Lease',
+      'exp_repairs': 'Repairs & Maintenance', 'exp_salaries': 'Salaries & Wages', 'exp_software': 'Software & Subscriptions',
+      'exp_travel': 'Travel Expenses', 'exp_utilities': 'Utilities', 'exp_other': 'Other Business Expenses'
+    `;
+
+    const prompt = `You are an expert bookkeeping assistant. Analyze the provided receipt image. Extract the transaction date, a clear description (merchant name and key items), and the total amount.
     
-    const systemInstruction = getModelPersonaSystemPrompt(persona);
-    const { narrative: sectionInstructions } = getFinancialSectionInstructions(sectionId);
-    const useSearch = sectionId === 'competitor_benchmarking' || sectionId === 'valuation_multiples';
-     const quantContext = `
-        **PRE-CALCULATED DATA (for your reference):**
-        ---
-        ${JSON.stringify(quantitativeData, null, 2)}
-        ---
+    Based on the description, suggest the most appropriate expense category by choosing its ID from the following list:
+    ---
+    ${accountListForPrompt}
+    ---
+    
+    Return the data in a valid JSON format. The amount should be a positive number.
+    If it looks like an income receipt (e.g., a payment confirmation to the user), you should still categorize it, perhaps as 'inc_sales' or 'inc_consulting', but the amount should remain positive.
     `;
     
-    let competitorContext = '';
-    if (useSearch && reportData.competitors.length > 0) {
-        competitorContext = `When using Google Search, focus your queries on these specific competitors: **${reportData.competitors.join(', ')}**.`;
+    try {
+        const response = await ai.models.generateContent({
+            model: "gemini-2.5-flash",
+            contents: { parts: [{ "text": prompt }, imageFilePart] },
+            config: {
+                responseMimeType: "application/json",
+                responseSchema: transactionExtractionSchema,
+                temperature: 0.0,
+            }
+        });
+        
+        const extracted = JSON.parse(response.text);
+        
+        return {
+            date: extracted.date,
+            description: extracted.description,
+            amount: extracted.amount,
+            accountId: extracted.suggestedAccountId,
+        };
+    } catch (error) {
+        console.error("Failed to extract transaction from image:", error);
+        throw new Error("Could not read the receipt. Please try another image or enter the details manually.");
     }
+};
+
+export const generateBookkeepingSummary = async (transactions: Transaction[]): Promise<AIBookkeepingSummary> => {
+    const bookkeepingSummarySchema = {
+        type: Type.OBJECT,
+        properties: {
+            summary: { type: Type.STRING, description: 'A 2-3 sentence overview of financial health for the period.' },
+            observations: { type: Type.ARRAY, items: { type: Type.STRING }, description: 'A list of 3-4 key, data-driven observations.' },
+            suggestion: { type: Type.STRING, description: 'One actionable suggestion for the user.' }
+        },
+        required: ['summary', 'observations', 'suggestion']
+    };
+    
+    const transactionsString = JSON.stringify(transactions.map(t => ({ date: t.date, description: t.description, amount: t.amount, accountId: t.accountId })), null, 2);
 
     const prompt = `
-        **Task:** Write the narrative analysis for the **'${sectionId}'** section.
-        **Context:**
-        - **Industries:** ${reportData.industries.join(', ')}
-        ${competitorContext}
-        ${quantitativeData.keyMetrics || quantitativeData.charts ? quantContext : ''}
+        **Task:** Analyze the following list of financial transactions for the most recent month. Provide a concise summary of the user's financial health.
+        
+        **Transaction Data:**
+        ---
+        ${transactionsString}
+        ---
 
-        **Instructions for '${sectionId}':**
-        ${sectionInstructions}
+        **Instructions:**
+        1.  **Summarize:** Write a brief, high-level summary of income, expenses, and net profit.
+        2.  **Observe:** Identify the most important trends or facts from the data. Examples: largest expense category, significant one-off transactions, or recurring spending patterns.
+        3.  **Suggest:** Provide one simple, actionable piece of advice based on your analysis.
+        4.  **Format:** Return the response in a valid JSON format adhering to the schema. Do not include any text outside the JSON structure.
+    `;
+    
+    try {
+        const response = await ai.models.generateContent({
+            model: "gemini-2.5-flash",
+            contents: prompt,
+            config: {
+                systemInstruction: "You are an expert accountant and financial advisor AI. Your goal is to provide clear, concise, and actionable insights based on a list of financial transactions. Analyze the data and summarize the user's financial health for the given period.",
+                responseMimeType: "application/json",
+                responseSchema: bookkeepingSummarySchema,
+                temperature: 0.2,
+            }
+        });
+        
+        if (!response.text) {
+            throw new Error("The API returned an empty response for the bookkeeping summary.");
+        }
+        return JSON.parse(response.text);
+    } catch (error) {
+        console.error("Failed to generate bookkeeping summary:", error);
+        throw new Error("Could not generate the AI financial summary. Please try again later.");
+    }
+};
 
-        **Output Format:**
-        Provide a text-only response. Structure your response strictly with these headings on new lines:
-        - **HEADLINE:** A single, impactful headline.
-        - **TAKEAWAYS:** A bulleted list of 3-5 key takeaways, each on a new line starting with '* '.
-        - **NARRATIVE:** A detailed narrative in multiple paragraphs.
+export const generatePnlSummary = async (pnlData: { income: number; expenses: number; netProfit: number; breakdown: { name: string; amount: number; type: 'Income' | 'Expense' }[] }): Promise<AIPnlSummary> => {
+    const pnlSummarySchema = {
+        type: Type.OBJECT,
+        properties: {
+            headline: { type: Type.STRING, description: 'A single, insightful headline summarizing the key result of the P&L statement.' },
+            takeaways: { type: Type.ARRAY, items: { type: Type.STRING }, description: 'A list of 2-3 key, data-driven takeaways about profitability drivers.' },
+        },
+        required: ['headline', 'takeaways']
+    };
+
+    const pnlDataString = `
+    - Total Income: ${pnlData.income.toFixed(2)}
+    - Total Expenses: ${pnlData.expenses.toFixed(2)}
+    - Net Profit: ${pnlData.netProfit.toFixed(2)}
+    - Breakdown:
+    ${pnlData.breakdown.map(item => `  - ${item.name} (${item.type}): ${item.amount.toFixed(2)}`).join('\n')}
     `;
 
-    const response = await ai.models.generateContent({
-        model: "gemini-2.5-flash",
-        contents: prompt,
-        config: { 
-            tools: useSearch ? [{ googleSearch: {} }] : [],
-            systemInstruction
+    const prompt = `
+        **Task:** You are an expert financial analyst. Analyze the following Profit & Loss (P&L) data for a given period. Provide a concise, insightful narrative summary.
+
+        **P&L Data:**
+        ---
+        ${pnlDataString}
+        ---
+
+        **Instructions:**
+        1.  **Headline:** Write a single, impactful headline that captures the main story of this P&L (e.g., "Strong Sales Drive Profitability Despite Rising Costs").
+        2.  **Key Takeaways:** Identify the 2-3 most important drivers of the result. Focus on the largest income and expense categories. Be specific and reference the data.
+        3.  **Format:** Return the response in a valid JSON format adhering to the schema. Do not include any text outside the JSON structure.
+    `;
+
+    try {
+        const response = await ai.models.generateContent({
+            model: "gemini-2.5-flash",
+            contents: prompt,
+            config: {
+                systemInstruction: "You are an expert accountant AI. Your goal is to provide a clear, concise, and insightful analysis of a Profit & Loss statement.",
+                responseMimeType: "application/json",
+                responseSchema: pnlSummarySchema,
+                temperature: 0.1,
+            }
+        });
+
+        if (!response.text) {
+            throw new Error("The API returned an empty response for the P&L summary.");
+        }
+        return JSON.parse(response.text);
+    } catch (error) {
+        console.error("Failed to generate P&L summary:", error);
+        throw new Error("Could not generate the AI financial analysis. Please try again later.");
+    }
+};
+
+export const generateBalanceSheetSummary = async (bsData: { totalAssets: number; totalLiabilities: number; totalEquity: number; breakdown: { name: string; amount: number; type: 'Asset' | 'Liability' | 'Equity' }[] }): Promise<AIBalanceSheetSummary> => {
+    const bsSummarySchema = {
+        type: Type.OBJECT,
+        properties: {
+            headline: { type: Type.STRING, description: 'A single, insightful headline summarizing the key result of the Balance Sheet.' },
+            takeaways: { type: Type.ARRAY, items: { type: Type.STRING }, description: 'A list of 2-3 key, data-driven takeaways about financial position, liquidity, or leverage.' },
         },
-    });
-
-    const text = response.text;
-    if (!text) throw new Error("The API returned an empty response for narrative generation.");
-    
-    const headlineMatch = text.match(/^HEADLINE:(.*)$/m);
-    const takeawaysMatch = text.match(/^TAKEAWAYS:(.*?)NARRATIVE:/ms);
-    const narrativeMatch = text.match(/^NARRATIVE:(.*)$/ms);
-
-    const headline = headlineMatch ? headlineMatch[1].trim() : `Analysis for ${sectionId}`;
-    const takeaways = takeawaysMatch ? takeawaysMatch[1].trim().split('\n').filter(t => t.trim().startsWith('*')).map(t => t.replace(/^\*\s*/, '').trim()) : [];
-    const narrative = narrativeMatch ? narrativeMatch[1].trim() : text.replace(/^HEADLINE:.*$/m, '').replace(/^TAKEAWAYS:.*$/ms, '').trim();
-
-    return {
-        headline,
-        takeaways,
-        narrative,
-        sources: response.candidates?.[0]?.groundingMetadata?.groundingChunks
-            ?.map(chunk => chunk.web)
-            .filter((web): web is { uri: string; title?: string } => !!web?.uri)
-            .map(web => ({ uri: web.uri, title: web.title || new URL(web.uri).hostname })) || []
+        required: ['headline', 'takeaways']
     };
+
+    const bsDataString = `
+    - Total Assets: ${bsData.totalAssets.toFixed(2)}
+    - Total Liabilities: ${bsData.totalLiabilities.toFixed(2)}
+    - Total Equity: ${bsData.totalEquity.toFixed(2)}
+    - Breakdown:
+    ${bsData.breakdown.map(item => `  - ${item.name} (${item.type}): ${item.amount.toFixed(2)}`).join('\n')}
+    `;
+
+    const prompt = `
+        **Task:** You are an expert financial analyst. Analyze the following Balance Sheet data for a specific date. Provide a concise, insightful narrative summary.
+
+        **Balance Sheet Data:**
+        ---
+        ${bsDataString}
+        ---
+
+        **Instructions:**
+        1.  **Headline:** Write a single, impactful headline that captures the main story of this Balance Sheet (e.g., "Solid Asset Base Supports Healthy Equity Position").
+        2.  **Key Takeaways:** Identify the 2-3 most important insights. Focus on the composition of assets and liabilities, liquidity (Current Assets vs. Current Liabilities if possible), and leverage (Debt vs. Equity). Be specific and reference the data.
+        3.  **Format:** Return the response in a valid JSON format adhering to the schema. Do not include any text outside the JSON structure.
+    `;
+
+    try {
+        const response = await ai.models.generateContent({
+            model: "gemini-2.5-flash",
+            contents: prompt,
+            config: {
+                systemInstruction: "You are an expert accountant AI. Your goal is to provide a clear, concise, and insightful analysis of a Balance Sheet.",
+                responseMimeType: "application/json",
+                responseSchema: bsSummarySchema,
+                temperature: 0.1,
+            }
+        });
+
+        if (!response.text) {
+            throw new Error("The API returned an empty response for the Balance Sheet summary.");
+        }
+        return JSON.parse(response.text);
+    } catch (error) {
+        console.error("Failed to generate Balance Sheet summary:", error);
+        throw new Error("Could not generate the AI financial analysis. Please try again later.");
+    }
 };
 
 
@@ -374,7 +554,6 @@ export const extractFinancialsFromPdf = async (
 
             const extractedData = JSON.parse(response.text);
 
-            // Post-processing to ensure all keys are present and values are strings
             const processedPeriods = extractedData.periods.map((p: any) => {
                 const newPeriod = createInitialPeriod();
                 newPeriod.periodLabel = p.periodLabel || '';
@@ -383,7 +562,15 @@ export const extractFinancialsFromPdf = async (
                     if (p[statement]) {
                         for (const key in newPeriod[statement]) {
                             if (Object.prototype.hasOwnProperty.call(p[statement], key)) {
-                                (newPeriod[statement] as any)[key] = String(p[statement][key] ?? '');
+                                const extractedValue = p[statement][key];
+                                const targetField = (newPeriod[statement] as any)[key];
+
+                                // Preserve array types to prevent crashes
+                                if (Array.isArray(targetField)) {
+                                    (newPeriod[statement] as any)[key] = Array.isArray(extractedValue) ? extractedValue : [];
+                                } else {
+                                    (newPeriod[statement] as any)[key] = String(extractedValue ?? '');
+                                }
                             }
                         }
                     }
@@ -421,7 +608,7 @@ export const extractFinancialsFromPdf = async (
 let chat: Chat | null = null;
 export const generateChatResponseStream = async (history: ChatMessage[], analysisContext: SectionAnalysis | undefined, reportData: ReportData) => {
     
-    const dataSummary = JSON.stringify(reportData, null, 2);
+    const dataSummary = `Company: ${reportData.companyName}, Active Entity: ${reportData.companyName}`; // Simplified for now
 
     const systemInstruction = `You are an expert financial analyst AI. You are in a chat session with a user who is viewing a financial report you generated.
     Your personality is helpful, concise, and data-driven.
@@ -476,4 +663,340 @@ export const generateChatResponseStream = async (history: ChatMessage[], analysi
         }
     }
     throw new Error("Sorry, the chat service is currently busy. Please try again in a moment.");
+};
+
+// --- BANKING RECONCILIATION ---
+export const suggestTransactionMatch = async (
+    bankTx: BankTransaction,
+    bookTxs: Transaction[]
+): Promise<MatchSuggestion | null> => {
+    const matchSuggestionSchema = {
+        type: Type.OBJECT,
+        properties: {
+            type: { type: Type.STRING, enum: ['match', 'create', 'none'] },
+            bookTransactionId: { type: Type.STRING, description: "The ID of the best matching book transaction. Only if type is 'match'." },
+            suggestedAccountId: { type: Type.STRING, description: "The suggested account ID for creating a new transaction. Only if type is 'create'." },
+        },
+        required: ['type']
+    };
+
+    const bookTxsForPrompt = bookTxs.map(tx => ({
+        id: tx.id,
+        date: tx.date,
+        description: tx.description,
+        amount: tx.amount
+    }));
+
+     const accountListForPrompt = `
+      'inc_sales': 'Sales Revenue', 'inc_consulting': 'Consulting Income', 'inc_interest': 'Interest Income', 'inc_other': 'Other Income',
+      'exp_advertising': 'Advertising & Marketing', 'exp_bank_fees': 'Bank Fees', 'exp_cogs': 'Cost of Goods Sold',
+      'exp_contractors': 'Contractors & Freelancers', 'exp_insurance': 'Insurance', 'exp_legal': 'Legal & Professional Services',
+      'exp_meals': 'Meals & Entertainment', 'exp_office': 'Office Supplies & Expenses', 'exp_rent': 'Rent & Lease',
+      'exp_repairs': 'Repairs & Maintenance', 'exp_salaries': 'Salaries & Wages', 'exp_software': 'Software & Subscriptions',
+      'exp_travel': 'Travel Expenses', 'exp_utilities': 'Utilities', 'exp_other': 'Other Business Expenses'
+    `;
+
+    const prompt = `
+        **Task:** You are an AI reconciliation assistant. Your job is to match a single bank transaction with a list of unreconciled book transactions.
+
+        **Bank Transaction to Match:**
+        ---
+        ${JSON.stringify(bankTx, null, 2)}
+        ---
+
+        **List of Available Book Transactions:**
+        ---
+        ${JSON.stringify(bookTxsForPrompt, null, 2)}
+        ---
+        
+        **Chart of Accounts for Categorization:**
+        ---
+        ${accountListForPrompt}
+        ---
+
+        **Instructions:**
+        1.  **Find the best match:** Look for a book transaction that is a close match based on amount and date (within a few days). A similar description is a strong indicator. If you find a confident match, return \`{ "type": "match", "bookTransactionId": "..." }\`.
+        2.  **Suggest creation:** If no good match exists, analyze the bank transaction description to suggest a category for creating a *new* book transaction. Choose the most logical account ID from the provided Chart of Accounts. Return \`{ "type": "create", "suggestedAccountId": "..." }\`.
+        3.  **No suggestion:** If you cannot confidently match or categorize, return \`{ "type": "none" }\`.
+        4.  **Important:** Only match against the provided book transactions. Only categorize using the provided account list. Your output must be valid JSON.
+    `;
+    
+    try {
+        const response = await ai.models.generateContent({
+            model: "gemini-2.5-flash",
+            contents: prompt,
+            config: {
+                responseMimeType: "application/json",
+                responseSchema: matchSuggestionSchema,
+                temperature: 0.0,
+            }
+        });
+        
+        const suggestion = JSON.parse(response.text) as MatchSuggestion | { type: 'none' };
+        return suggestion.type === 'none' ? null : suggestion;
+
+    } catch (error) {
+        console.error("Failed to get reconciliation suggestion:", error);
+        // Don't throw, just return null so the UI can handle it gracefully
+        return null;
+    }
+};
+
+// --- New Function for Proactive Bank Feed Analysis ---
+export const analyzeBankFeed = async (
+    unreconciledTxs: BankTransaction[],
+    chartOfAccounts: ChartOfAccount[]
+): Promise<AIBankFeedInsight[]> => {
+    const insightSchema = {
+        type: Type.OBJECT,
+        properties: {
+            id: { type: Type.STRING },
+            type: { type: Type.STRING, enum: ['CREATE_RULE', 'RECURRING_PAYMENT'] },
+            title: { type: Type.STRING },
+            description: { type: Type.STRING },
+            data: {
+                type: Type.OBJECT,
+                properties: {
+                    keyword: { type: Type.STRING },
+                    suggestedAccountId: { type: Type.STRING },
+                    amount: { type: Type.NUMBER },
+                    frequency: { type: Type.STRING, enum: ['weekly', 'monthly'] },
+                }
+            }
+        },
+        required: ['id', 'type', 'title', 'description', 'data']
+    };
+
+    const txsForPrompt = unreconciledTxs.map(tx => ({
+        description: tx.description,
+        amount: tx.amount
+    }));
+
+    const accountsForPrompt = chartOfAccounts
+        .filter(acc => acc.type === 'Expense' || acc.type === 'Income')
+        .map(acc => `'${acc.id}': '${acc.name}'`)
+        .join(', ');
+
+    const prompt = `
+        **Task:** You are an AI accounting assistant. Analyze the following list of unreconciled bank transactions to identify patterns and suggest automations.
+
+        **Unreconciled Transactions:**
+        ---
+        ${JSON.stringify(txsForPrompt, null, 2)}
+        ---
+
+        **Available Categories (Chart of Accounts):**
+        ---
+        { ${accountsForPrompt} }
+        ---
+
+        **Instructions:**
+        1.  **Identify recurring payments:** Look for transactions with the same or very similar descriptions and amounts that appear to be on a regular schedule (e.g., weekly, monthly). For these, generate an insight of type 'RECURRING_PAYMENT'.
+        2.  **Suggest categorization rules:** Find groups of transactions with similar keywords in their descriptions (e.g., "Starbucks", "Uber", "Adobe") that are not yet automated. For these, generate an insight of type 'CREATE_RULE'. Suggest a keyword and the most logical category from the provided chart of accounts.
+        3.  **Prioritize:** Generate a maximum of 3-4 of the most impactful insights. A rule that covers many transactions is more impactful than a one-off recurring payment.
+        4.  **Format:** Your output must be a single, valid JSON array of insight objects, adhering to the schema.
+    `;
+
+    try {
+        const response = await ai.models.generateContent({
+            model: "gemini-2.5-flash",
+            contents: prompt,
+            config: {
+                responseMimeType: "application/json",
+                responseSchema: { type: Type.ARRAY, items: insightSchema },
+                temperature: 0.2,
+            }
+        });
+        if (!response.text) return [];
+        return JSON.parse(response.text);
+    } catch (error) {
+        console.error("Failed to analyze bank feed:", error);
+        return [];
+    }
+};
+
+export const generateKPIDeepDive = async (
+    title: string,
+    transactions: Transaction[]
+): Promise<KPIDeepDiveResponse> => {
+    const kpiDeepDiveSchema = {
+        type: Type.OBJECT,
+        properties: {
+            narrative: { type: Type.STRING, description: "A 2-3 sentence narrative explaining the key drivers for this KPI, based on the provided transactions." },
+            chart: chartSchema
+        },
+        required: ['narrative', 'chart']
+    };
+
+    const transactionData = transactions.map(t => ({ description: t.description, amount: t.amount, date: t.date })).slice(0, 50);
+
+    const prompt = `
+        **Task:** You are a financial analyst. A user wants to understand what is driving the KPI: "${title}".
+        Analyze the provided list of transactions that contribute to this KPI.
+
+        **Transaction Data:**
+        ---
+        ${JSON.stringify(transactionData, null, 2)}
+        ---
+
+        **Instructions:**
+        1.  **Narrative:** Write a short, insightful narrative explaining the main contributors or trends within this data. For example, if analyzing expenses, point out the largest transaction or most frequent vendor.
+        2.  **Chart:** Create a single, appropriate chart to visualize the data. A 'bar' or 'pie' chart is usually best for this. The chart should show the top 5-7 contributors. Group smaller items into an 'Other' category if necessary.
+        3.  **Format:** Return a single, valid JSON object adhering to the schema.
+    `;
+
+    try {
+        const response = await ai.models.generateContent({
+            model: "gemini-2.5-flash",
+            contents: prompt,
+            config: {
+                responseMimeType: "application/json",
+                responseSchema: kpiDeepDiveSchema,
+                temperature: 0.1,
+            }
+        });
+        if (!response.text) {
+            throw new Error("The API returned an empty response for the KPI deep dive.");
+        }
+        return JSON.parse(response.text);
+    } catch (error) {
+        console.error(`Failed to generate KPI deep dive for "${title}":`, error);
+        throw new Error(`Could not generate the AI analysis for ${title}.`);
+    }
+};
+
+export const generateBusinessInsights = async (
+    transactions: Transaction[],
+    invoices: Invoice[],
+    bills: Bill[],
+    budgets: Budgets,
+    inventory: InventoryItem[]
+): Promise<InsightCard[]> => {
+    const insightCardSchema = {
+        type: Type.OBJECT,
+        properties: {
+            type: { type: Type.STRING, enum: ['cash_flow', 'overdue', 'budget', 'large_expense', 'inventory', 'general'] },
+            severity: { type: Type.STRING, enum: ['Critical', 'Warning', 'Info'] },
+            title: { type: Type.STRING },
+            description: { type: Type.STRING },
+            link: { type: Type.STRING, description: "A relative path to navigate to, e.g., 'bookkeeping/sales'." },
+        },
+        required: ['type', 'severity', 'title', 'description']
+    };
+
+    const dataContext = `
+        - Recent Transactions: ${transactions.length} entries
+        - Overdue Invoices: ${invoices.filter(i => i.status === 'Overdue').length}
+        - Overdue Bills: ${bills.filter(b => b.status === 'Overdue').length}
+        - Budgets are set for ${Object.keys(budgets).length} expense accounts.
+        - Inventory is tracked for ${inventory.length} items.
+    `;
+
+    const prompt = `
+        **Task:** You are an AI business advisor. Analyze the following summary of a company's financial data to identify the top 3-5 most important insights.
+
+        **Data Context:**
+        ---
+        ${dataContext}
+        ---
+
+        **Instructions:**
+        1.  **Identify Risks & Opportunities:** Look for potential issues (e.g., cash flow shortfalls, overdue items, budget overruns) or positive trends.
+        2.  **Be Actionable:** Frame your insights with clear titles and descriptions that explain *why* it's important.
+        3.  **Assign Severity:** Use 'Critical' for urgent issues, 'Warning' for potential problems, and 'Info' for helpful observations.
+        4.  **Provide a Link:** Suggest a relevant page for the user to investigate further. Use one of: 'bookkeeping/dashboard', 'bookkeeping/sales', 'bookkeeping/purchases', 'bookkeeping/budgets', 'bookkeeping/inventory', 'bookkeeping/forecast'.
+        5.  **Format:** Return a valid JSON array of insight objects. If no significant insights are found, return an empty array.
+    `;
+
+    try {
+        const response = await ai.models.generateContent({
+            model: "gemini-2.5-flash",
+            contents: prompt,
+            config: {
+                responseMimeType: "application/json",
+                responseSchema: { type: Type.ARRAY, items: insightCardSchema },
+                temperature: 0.3,
+            }
+        });
+        if (!response.text) {
+            return [];
+        }
+        return JSON.parse(response.text);
+    } catch (error) {
+        console.error("Failed to generate business insights:", error);
+        throw new Error("Could not generate AI insights at this time.");
+    }
+};
+
+export const generateCashFlowForecast = async (
+    startingBalance: number,
+    recentTransactions: Transaction[],
+    invoices: Invoice[],
+    bills: Bill[],
+    recurring: RecurringTransaction[],
+    manualAdjustments: ManualAdjustment[]
+): Promise<CashFlowForecast> => {
+     const forecastPeriodSchema = {
+        type: Type.OBJECT,
+        properties: {
+            week: { type: Type.STRING, description: "Label for the week, e.g., 'Jul 15-21'" },
+            inflows: { type: Type.NUMBER },
+            outflows: { type: Type.NUMBER },
+            netChange: { type: Type.NUMBER },
+            endingBalance: { type: Type.NUMBER }
+        },
+        required: ['week', 'inflows', 'outflows', 'netChange', 'endingBalance']
+    };
+    const cashFlowForecastSchema = {
+        type: Type.OBJECT,
+        properties: {
+            narrative: { type: Type.STRING, description: "A 2-3 sentence summary of the forecast, highlighting key upcoming cash movements." },
+            startingBalance: { type: Type.NUMBER },
+            forecast: { type: Type.ARRAY, items: forecastPeriodSchema }
+        },
+        required: ['narrative', 'startingBalance', 'forecast']
+    };
+
+    const dataForPrompt = {
+        startingBalance,
+        openInvoices: invoices.filter(i => i.status !== 'Paid').map(i => ({ dueDate: i.dueDate, amountDue: i.lineItems.reduce((s,li) => s + li.quantity * li.unitPrice, 0) - (i.payments?.reduce((s,p) => s+p.amount,0) || 0) })),
+        openBills: bills.filter(b => b.status === 'Awaiting Payment' || b.status === 'Overdue').map(b => ({ dueDate: b.dueDate, amount: b.lineItems.reduce((s,li) => s + li.quantity * li.unitPrice, 0) })),
+        recurring,
+        manualAdjustments
+    };
+
+    const prompt = `
+        **Task:** Create an 8-week cash flow forecast.
+        
+        **Data:**
+        ---
+        ${JSON.stringify(dataForPrompt, null, 2)}
+        ---
+
+        **Instructions:**
+        1.  **Starting Point:** Begin with the provided 'startingBalance'.
+        2.  **Project Weekly:** For each of the next 8 weeks, calculate expected inflows (from open invoices, recurring income) and outflows (from open bills, recurring expenses). Include any manual adjustments in their respective weeks.
+        3.  **Calculate Balances:** For each week, calculate the net change and the ending balance. The ending balance of one week is the starting balance for the next.
+        4.  **Narrative:** Write a brief summary explaining the main drivers of the cash flow changes over the forecast period.
+        5.  **Format:** Return a single, valid JSON object.
+    `;
+    
+    try {
+        const response = await ai.models.generateContent({
+            model: "gemini-2.5-flash",
+            contents: prompt,
+            config: {
+                responseMimeType: "application/json",
+                responseSchema: cashFlowForecastSchema,
+                temperature: 0.1,
+            }
+        });
+        if (!response.text) {
+            throw new Error("The API returned an empty forecast response.");
+        }
+        return JSON.parse(response.text);
+    } catch (error) {
+        console.error("Failed to generate cash flow forecast:", error);
+        throw new Error("Could not generate the AI cash flow forecast.");
+    }
 };

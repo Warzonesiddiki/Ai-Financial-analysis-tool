@@ -1,4 +1,7 @@
 
+
+
+
 import React from 'react';
 import { ReportSection, ReportData, Chart } from '../types';
 import { StatCard } from './StatCard';
@@ -7,47 +10,70 @@ import { SimplePieChart } from './charts/SimplePieChart';
 import { SimpleLineChart } from './charts/SimpleLineChart';
 import { SimpleWaterfallChart } from './charts/SimpleWaterfallChart';
 import { NarrativeDisplay } from './NarrativeDisplay';
-import { AlertTriangleIcon } from './icons';
-import { Spinner } from './Spinner';
+import { AlertTriangleIcon, InfoIcon, RefreshCwIcon } from './icons';
 import InteractiveScenario from './InteractiveScenario';
 
 interface SectionDisplayProps {
     section: ReportSection;
     reportData: ReportData;
-    progressStatus: 'pending' | 'loading' | 'success' | 'error';
+    progressStatus: 'pending' | 'loading' | 'success' | 'error' | 'skipped';
+    onRetrySection: (sectionId: string) => void;
 }
+
+const SkeletonLoader = () => (
+    <div className="card" style={{ pageBreakInside: 'avoid', margin: '2rem 0' }}>
+        <div className="skeleton skeleton-h3"></div>
+        <div className="grid grid-cols-4" style={{gap: '1rem', marginBottom: '2rem'}}>
+            <div className="skeleton skeleton-card"></div>
+            <div className="skeleton skeleton-card"></div>
+            <div className="skeleton skeleton-card"></div>
+            <div className="skeleton skeleton-card"></div>
+        </div>
+        <div className="skeleton skeleton-text"></div>
+        <div className="skeleton skeleton-text skeleton-text-short"></div>
+        <div className="skeleton skeleton-text" style={{marginTop: '1rem'}}></div>
+        <div className="skeleton skeleton-text"></div>
+        <div className="skeleton skeleton-text skeleton-text-short"></div>
+    </div>
+);
+
 
 const renderChart = (chart: Chart, sectionId: string, index: number, currency: string) => {
     return (
         <div key={index} className="card" id={`chart-${sectionId}-${index}`} style={{ gridColumn: 'span 1', pageBreakInside: 'avoid' }}>
-             <h4 style={{marginBottom: '1rem'}}>{chart.title}</h4>
+             <h3 style={{marginBottom: '1.5rem'}}>{chart.title}</h3>
              {chart.type === 'bar' && <SimpleBarChart data={chart.data} currency={currency} />}
-             {chart.type === 'pie' && <SimplePieChart data={chart.data} />}
+             {chart.type === 'pie' && <SimplePieChart data={chart.data} currency={currency} />}
              {chart.type === 'line' && <SimpleLineChart data={chart.data} currency={currency} />}
              {chart.type === 'waterfall' && <SimpleWaterfallChart data={chart.data} currency={currency} />}
         </div>
     );
 };
 
-export const SectionDisplay: React.FC<SectionDisplayProps> = ({ section, reportData, progressStatus }) => {
+export const SectionDisplay: React.FC<SectionDisplayProps> = ({ section, reportData, progressStatus, onRetrySection }) => {
     
     if (progressStatus === 'loading' || !section.analysis) {
-        return (
-            <div className="card" style={{ textAlign: 'center', padding: '4rem', margin: '2rem 0', pageBreakInside: 'avoid' }}>
-                <Spinner />
-                <h3 style={{ marginTop: '1rem' }}>Generating Analysis for {section.name}...</h3>
-            </div>
-        );
+        return <SkeletonLoader />;
     }
 
-    if (progressStatus === 'error') {
+    if (progressStatus === 'error' || progressStatus === 'skipped') {
+        const isError = progressStatus === 'error';
+        const color = isError ? 'var(--color-error)' : 'var(--color-text-secondary)';
+        const bgColor = isError ? 'rgba(220, 38, 38, 0.05)' : 'rgba(107, 114, 128, 0.05)';
+        const Icon = isError ? AlertTriangleIcon : InfoIcon;
+
         return (
-            <div className="card" style={{ borderColor: 'var(--color-error)', backgroundColor: 'rgba(220, 38, 38, 0.05)', margin: '2rem 0', pageBreakInside: 'avoid' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.75rem', color: 'var(--color-error)' }}>
-                    <AlertTriangleIcon style={{ width: '24px', height: '24px' }} />
-                    <h3 style={{ margin: 0 }}>Analysis Failed for {section.name}</h3>
+            <div className="card" style={{ borderColor: color, backgroundColor: bgColor, margin: '2rem 0', pageBreakInside: 'avoid' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.75rem', color: color }}>
+                    <Icon style={{ width: '24px', height: '24px' }} />
+                    <h3 style={{ margin: 0 }}>{isError ? `Analysis Failed for ${section.name}`: 'Analysis Skipped'}</h3>
                 </div>
-                <p style={{ color: '#b91c1c' }}>{section.analysis.narrative || 'The AI was unable to generate an analysis for this section.'}</p>
+                <p style={{ color: isError ? '#b91c1c' : 'var(--color-text-secondary)' }}>{section.analysis.narrative || 'The AI was unable to generate an analysis for this section.'}</p>
+                {isError && (
+                    <div style={{ marginTop: '1rem', display: 'flex', justifyContent: 'flex-end' }}>
+                        <button onClick={() => onRetrySection(section.id)} className="button button-secondary"><RefreshCwIcon /> Retry Analysis</button>
+                    </div>
+                )}
             </div>
         );
     }
@@ -58,14 +84,16 @@ export const SectionDisplay: React.FC<SectionDisplayProps> = ({ section, reportD
     const hasCharts = quantitativeData.charts && quantitativeData.charts.length > 0;
     const hasMetrics = quantitativeData.keyMetrics && quantitativeData.keyMetrics.length > 0;
     const chartLayout = !hasCharts ? '' : quantitativeData.charts.length === 1 ? 'grid-cols-1' : 'grid-cols-2';
-    const metricLayout = !hasMetrics ? '' : quantitativeData.keyMetrics.length > 2 ? 'grid-cols-4' : 'grid-cols-2';
+    const metricLayout = !hasMetrics ? '' : quantitativeData.keyMetrics.length > 2 ? 'grid-cols-3' : 'grid-cols-4';
 
 
     return (
-        <div style={{ pageBreakInside: 'avoid', marginBottom: '3rem', borderTop: '2px solid var(--color-border)', paddingTop: '2rem' }}>
-            <h2 style={{color: 'var(--color-primary)', fontSize: '1.75rem'}}>{section.name}</h2>
+        <div style={{ pageBreakInside: 'avoid', marginBottom: '3rem' }}>
+             <header style={{borderBottom: '1px solid var(--color-border)', paddingBottom: '1rem', marginBottom: '2rem'}}>
+                <h1 style={{color: 'var(--color-primary)', fontSize: '2.25rem'}}>{section.name}</h1>
+                <h3 style={{ margin: 0, fontStyle: 'italic', fontWeight: 500, color: 'var(--color-text-secondary)' }}>{analysis.headline}</h3>
+             </header>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-                <h3 style={{ margin: 0, fontStyle: 'italic', fontWeight: 600, color: 'var(--color-text)' }}>{analysis.headline}</h3>
                 
                 {hasMetrics && (
                     <div className={`grid ${metricLayout}`} style={{gap: '1rem'}}>

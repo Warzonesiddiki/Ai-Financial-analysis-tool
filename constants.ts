@@ -27,6 +27,29 @@ export const REPORT_SECTIONS = [
     { id: 'report_methodology', name: 'Report Methodology', icon: BookIcon },
 ];
 
+export const REPORT_SECTION_BATCHES = [
+  { 
+    name: 'Executive Summary & Methodology', 
+    sections: ['executive_summary', 'report_methodology'] 
+  },
+  { 
+    name: 'Core Financial Statements', 
+    sections: ['profit_or_loss', 'financial_position', 'cash_flows'] 
+  },
+  { 
+    name: 'Ratio & Performance Analysis', 
+    sections: ['key_ratios', 'dupont_analysis', 'common_size_analysis', 'working_capital'] 
+  },
+  { 
+    name: 'Business Operations Deep Dive', 
+    sections: ['revenue_deep_dive', 'cost_and_margin_analysis', 'budget_vs_actuals', 'debt_and_leverage'] 
+  },
+  { 
+    name: 'Strategic & Forward-Looking Analysis', 
+    sections: ['financial_risks', 'competitor_benchmarking', 'valuation_multiples', 'scenario_analysis', 'esg_and_sustainability'] 
+  },
+];
+
 export const INDUSTRY_OPTIONS = [
     "Technology",
     "SaaS",
